@@ -17,9 +17,12 @@ import (
 type ErrorCode string
 
 const (
-	ErrorCodeInvalidArgument ErrorCode = "INVALID_ARGUMENT"
-	ErrorCodeNotFound        ErrorCode = "NOT_FOUND"
-	ErrorCodeInternal        ErrorCode = "INTERNAL"
+	ErrorCodeInvalidArgument    ErrorCode = "INVALID_ARGUMENT"
+	ErrorCodeUnauthorized       ErrorCode = "UNAUTHORIZED"
+	ErrorCodeInvalidCredentials ErrorCode = "INVALID_CREDENTIALS"
+	ErrorCodeNotFound           ErrorCode = "NOT_FOUND"
+	ErrorCodeConflict           ErrorCode = "CONFLICT"
+	ErrorCodeInternal           ErrorCode = "INTERNAL"
 )
 
 type ErrorBody struct {
@@ -54,8 +57,12 @@ func StatusCode(code ErrorCode) int {
 	switch code {
 	case ErrorCodeInvalidArgument:
 		return http.StatusBadRequest
+	case ErrorCodeUnauthorized, ErrorCodeInvalidCredentials:
+		return http.StatusUnauthorized
 	case ErrorCodeNotFound:
 		return http.StatusNotFound
+	case ErrorCodeConflict:
+		return http.StatusConflict
 	case ErrorCodeInternal:
 		fallthrough
 	default:

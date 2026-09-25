@@ -8,11 +8,6 @@ import (
 	"gorm.io/gorm"
 )
 
-var (
-	ErrNotFound = errors.New("user not found")
-	ErrConflict = errors.New("user already exists")
-)
-
 // Repository 定义用户领域需要的数据库能力。
 //
 // Handler 和 Service 只依赖这个接口，不直接依赖 GORM。

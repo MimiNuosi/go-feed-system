@@ -8,15 +8,25 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"go-feed-system/internal/health"
+	"go-feed-system/internal/middleware"
 	"go-feed-system/internal/router"
+	"go-feed-system/internal/user"
 	"go-feed-system/pkg/config"
+	"go-feed-system/pkg/database"
+	"go-feed-system/pkg/password"
+	"go-feed-system/pkg/token"
+
+	"github.com/joho/godotenv"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const version = "dev"
 
 func main() {
+	_ = godotenv.Load() // 自动加载同目录下的 .env
 	if err := run(); err != nil {
 		slog.Error("server stopped with error", "error", err)
 		os.Exit(1)
@@ -33,8 +43,48 @@ func run() error {
 		Level: slog.LevelInfo,
 	}))
 
-	healthHandler := health.NewHandler(version)
-	engine := router.New(logger, healthHandler)
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelStartup()
+
+	db, err := database.Open(startupCtx, database.MySQLConfig{
+		DSN:             cfg.MySQL.DSN,
+		MaxOpenConns:    cfg.MySQL.MaxOpenConns,
+		MaxIdleConns:    cfg.MySQL.MaxIdleConns,
+		ConnMaxLifetime: cfg.MySQL.ConnMaxLifetime,
+	})
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer func() {
+		if err := database.Close(db); err != nil {
+			logger.Error("close database", "error", err)
+		}
+	}()
+
+	hasher, err := password.NewBcryptHasher(bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("create password hasher: %w", err)
+	}
+
+	tokenManager, err := token.NewManager(
+		cfg.Auth.JWTSecret,
+		cfg.Auth.JWTIssuer,
+		cfg.Auth.JWTTTL,
+	)
+	if err != nil {
+		return fmt.Errorf("create token manager: %w", err)
+	}
+
+	userRepository := user.NewGORMRepository(db)
+	userService := user.NewService(userRepository, hasher, tokenManager)
+	userHandler := user.NewHandler(userService)
+
+	engine := router.New(router.Dependencies{
+		Logger:         logger,
+		HealthHandler:  health.NewHandler(version),
+		UserHandler:    userHandler,
+		AuthMiddleware: middleware.Auth(tokenManager, logger),
+	})
 
 	server := &http.Server{
 		Addr:              cfg.HTTP.Addr,

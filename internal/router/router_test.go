@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"go-feed-system/internal/health"
+	"go-feed-system/internal/user"
 
 	"github.com/gin-gonic/gin"
 )
@@ -18,7 +19,12 @@ func TestMethodNotAllowed(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	healthHandler := health.NewHandler("test-version")
 
-	engine := New(logger, healthHandler)
+	engine := New(Dependencies{
+		Logger:         logger,
+		HealthHandler:  healthHandler,
+		UserHandler:    user.NewHandler(nil),
+		AuthMiddleware: func(c *gin.Context) { c.Next() },
+	})
 
 	t.Run("POST /livez should return 405", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/livez", nil)

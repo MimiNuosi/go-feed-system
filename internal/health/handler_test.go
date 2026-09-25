@@ -12,6 +12,7 @@ import (
 
 	"go-feed-system/internal/health"
 	"go-feed-system/internal/router"
+	"go-feed-system/internal/user"
 )
 
 func TestHandlerLive(t *testing.T) {
@@ -75,5 +76,10 @@ func TestHandlerReady(t *testing.T) {
 func newTestEngine() *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return router.New(logger, health.NewHandler("test-version"))
+	return router.New(router.Dependencies{
+		Logger:         logger,
+		HealthHandler:  health.NewHandler("test-version"),
+		UserHandler:    user.NewHandler(nil),
+		AuthMiddleware: func(c *gin.Context) { c.Next() },
+	})
 }

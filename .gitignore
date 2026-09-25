@@ -12,6 +12,8 @@ go.sum.lock
 *.local.toml
 config.local.*
 config.yaml
+.env
+.env.local
 
 # IDE 配置
 .idea/
