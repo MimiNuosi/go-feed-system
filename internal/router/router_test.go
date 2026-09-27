@@ -9,6 +9,7 @@ import (
 
 	"go-feed-system/internal/health"
 	"go-feed-system/internal/user"
+	"go-feed-system/internal/video"
 
 	"github.com/gin-gonic/gin"
 )
@@ -24,6 +25,7 @@ func TestMethodNotAllowed(t *testing.T) {
 		HealthHandler:  healthHandler,
 		UserHandler:    user.NewHandler(nil),
 		AuthMiddleware: func(c *gin.Context) { c.Next() },
+		VideoHandler:   video.NewHandler(nil),
 	})
 
 	t.Run("POST /livez should return 405", func(t *testing.T) {

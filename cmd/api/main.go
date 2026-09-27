@@ -14,9 +14,11 @@ import (
 	"go-feed-system/internal/middleware"
 	"go-feed-system/internal/router"
 	"go-feed-system/internal/user"
+	"go-feed-system/internal/video"
 	"go-feed-system/pkg/config"
 	"go-feed-system/pkg/database"
 	"go-feed-system/pkg/password"
+	"go-feed-system/pkg/storage/local"
 	"go-feed-system/pkg/token"
 
 	"github.com/joho/godotenv"
@@ -79,11 +81,21 @@ func run() error {
 	userService := user.NewService(userRepository, hasher, tokenManager)
 	userHandler := user.NewHandler(userService)
 
+	videoStorage, err := local.NewStorage(cfg.Storage.LocalDir)
+	if err != nil {
+		return fmt.Errorf("create video storage: %w", err)
+	}
+
+	videoRepository := video.NewGORMRepository(db)
+	videoService := video.NewService(videoRepository, videoStorage, userService, logger)
+	videoHandler := video.NewHandler(videoService)
+
 	engine := router.New(router.Dependencies{
 		Logger:         logger,
 		HealthHandler:  health.NewHandler(version),
 		UserHandler:    userHandler,
 		AuthMiddleware: middleware.Auth(tokenManager, logger),
+		VideoHandler:   videoHandler,
 	})
 
 	server := &http.Server{

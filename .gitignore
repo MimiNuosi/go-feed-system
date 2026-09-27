@@ -1,4 +1,6 @@
 .cache/
+/data/
+*.mp4
 
 # Go 编译产物
 *.exe

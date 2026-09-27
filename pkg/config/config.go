@@ -16,14 +16,16 @@ const (
 	defaultMySQLMaxOpenConns = 20
 	defaultMySQLMaxIdleConns = 5
 	defaultMySQLConnLifetime = 30 * time.Minute
+	defaultLocalStorageDir   = "./data/videos"
 )
 
 // Config 保存应用启动时需要的全部配置。
 // 依赖从 main 显式传给各个组件，不通过全局变量获取。
 type Config struct {
-	HTTP  HTTPConfig
-	MySQL MySQLConfig
-	Auth  AuthConfig
+	HTTP    HTTPConfig
+	MySQL   MySQLConfig
+	Auth    AuthConfig
+	Storage StorageConfig
 }
 
 type HTTPConfig struct {
@@ -43,6 +45,10 @@ type AuthConfig struct {
 	JWTSecret string
 	JWTIssuer string
 	JWTTTL    time.Duration
+}
+
+type StorageConfig struct {
+	LocalDir string
 }
 
 // Load 从环境变量和默认值构造配置。
@@ -66,6 +72,9 @@ func Load() (Config, error) {
 			JWTSecret: strings.TrimSpace(os.Getenv("JWT_SECRET")),
 			JWTIssuer: defaultJWTIssuer,
 			JWTTTL:    defaultJWTTTL,
+		},
+		Storage: StorageConfig{
+			LocalDir: envOrDefault("LOCAL_STORAGE_DIR", defaultLocalStorageDir),
 		},
 	}
 
@@ -106,6 +115,9 @@ func (c Config) validate() error {
 	}
 	if c.Auth.JWTTTL <= 0 {
 		return fmt.Errorf("JWT TTL must be positive")
+	}
+	if strings.TrimSpace(c.Storage.LocalDir) == "" {
+		return fmt.Errorf("local storage dir must not be empty")
 	}
 
 	return nil

@@ -13,6 +13,7 @@ import (
 	"go-feed-system/internal/health"
 	"go-feed-system/internal/router"
 	"go-feed-system/internal/user"
+	"go-feed-system/internal/video"
 )
 
 func TestHandlerLive(t *testing.T) {
@@ -81,5 +82,6 @@ func newTestEngine() *gin.Engine {
 		HealthHandler:  health.NewHandler("test-version"),
 		UserHandler:    user.NewHandler(nil),
 		AuthMiddleware: func(c *gin.Context) { c.Next() },
+		VideoHandler:   video.NewHandler(nil),
 	})
 }

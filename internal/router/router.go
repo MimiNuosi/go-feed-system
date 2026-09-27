@@ -8,6 +8,7 @@ import (
 	"go-feed-system/internal/health"
 	"go-feed-system/internal/middleware"
 	"go-feed-system/internal/user"
+	"go-feed-system/internal/video"
 )
 
 type Dependencies struct {
@@ -15,6 +16,7 @@ type Dependencies struct {
 	HealthHandler  *health.Handler
 	UserHandler    *user.Handler
 	AuthMiddleware gin.HandlerFunc
+	VideoHandler   *video.Handler
 }
 
 // New 组装 HTTP 路由和中间件。
@@ -31,11 +33,14 @@ func New(deps Dependencies) *gin.Engine {
 	// 基础设施探针不放进 /api/v1，避免业务版本升级影响运维配置。
 	engine.GET("/livez", deps.HealthHandler.Live)
 	engine.GET("/readyz", deps.HealthHandler.Ready)
+	engine.GET("/api/v1/videos/:id", deps.VideoHandler.GetDetail)
+	engine.GET("/api/v1/videos/:id/file", deps.VideoHandler.File)
 
 	v1 := engine.Group("/api/v1")
 	v1.POST("/auth/register", deps.UserHandler.Register)
 	v1.POST("/auth/login", deps.UserHandler.Login)
 	v1.GET("/users/me", deps.AuthMiddleware, deps.UserHandler.Me)
+	v1.POST("/videos", deps.AuthMiddleware, deps.VideoHandler.Upload)
 
 	return engine
 }

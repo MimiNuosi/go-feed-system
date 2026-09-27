@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-阶段 2：用户注册、登录和 JWT 鉴权。
+阶段 3：视频上传、元数据和本地磁盘存储。
 
 ## 运行
 
@@ -13,6 +13,7 @@
 ```powershell
 $env:MYSQL_DSN = "feed_app:你的密码@tcp(127.0.0.1:3308)/go_feed_system?charset=utf8mb4&parseTime=True&loc=Local"
 $env:JWT_SECRET = "至少32字节的随机密钥"
+$env:LOCAL_STORAGE_DIR = "./data/videos"
 go run ./cmd/api
 ```
 
@@ -30,6 +31,18 @@ curl.exe -i http://127.0.0.1:8080/livez
 curl.exe -i http://127.0.0.1:8080/readyz
 ```
 
+视频上传需要携带 JWT：
+
+```http
+POST /api/v1/videos
+Authorization: Bearer <jwt>
+Content-Type: multipart/form-data
+
+title
+description
+file
+```
+
 ## 常用命令
 
 ```powershell
@@ -43,3 +56,4 @@ go test ./...
 - [阶段 0](docs/00-walking-skeleton.md)
 - [阶段 1](docs/01-http-layering.md)
 - [阶段 2](docs/02-user-auth.md)
+- [阶段 3](docs/03-video.md)
