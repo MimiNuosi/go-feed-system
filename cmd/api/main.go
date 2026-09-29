@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"go-feed-system/internal/health"
+	"go-feed-system/internal/interaction"
 	"go-feed-system/internal/middleware"
 	"go-feed-system/internal/router"
 	"go-feed-system/internal/user"
@@ -90,12 +91,17 @@ func run() error {
 	videoService := video.NewService(videoRepository, videoStorage, userService, logger)
 	videoHandler := video.NewHandler(videoService)
 
+	followRepository := interaction.NewGORMFollowRepository(db)
+	followService := interaction.NewFollowService(followRepository, userService)
+	followHandler := interaction.NewFollowHandler(followService, logger)
+
 	engine := router.New(router.Dependencies{
 		Logger:         logger,
 		HealthHandler:  health.NewHandler(version),
 		UserHandler:    userHandler,
 		AuthMiddleware: middleware.Auth(tokenManager, logger),
 		VideoHandler:   videoHandler,
+		FollowHandler:  followHandler,
 	})
 
 	server := &http.Server{

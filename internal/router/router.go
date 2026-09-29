@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"go-feed-system/internal/health"
+	"go-feed-system/internal/interaction"
 	"go-feed-system/internal/middleware"
 	"go-feed-system/internal/user"
 	"go-feed-system/internal/video"
@@ -17,6 +18,7 @@ type Dependencies struct {
 	UserHandler    *user.Handler
 	AuthMiddleware gin.HandlerFunc
 	VideoHandler   *video.Handler
+	FollowHandler  *interaction.FollowHandler
 }
 
 // New 组装 HTTP 路由和中间件。
@@ -37,10 +39,23 @@ func New(deps Dependencies) *gin.Engine {
 	engine.GET("/api/v1/videos/:id/file", deps.VideoHandler.File)
 
 	v1 := engine.Group("/api/v1")
+
+	// 1. 公开接口（无需鉴权）
 	v1.POST("/auth/register", deps.UserHandler.Register)
 	v1.POST("/auth/login", deps.UserHandler.Login)
-	v1.GET("/users/me", deps.AuthMiddleware, deps.UserHandler.Me)
-	v1.POST("/videos", deps.AuthMiddleware, deps.VideoHandler.Upload)
+
+	// 2. 需要鉴权的接口组
+	auth := v1.Group("")
+	auth.Use(deps.AuthMiddleware) // 整个组统一挂载鉴权中间件
+	{
+		auth.GET("/users/me", deps.UserHandler.Me)
+		auth.POST("/videos", deps.VideoHandler.Upload)
+
+		// 关注模块
+		auth.POST("/users/:id/follow", deps.FollowHandler.Follow)
+		auth.DELETE("/users/:id/follow", deps.FollowHandler.Unfollow)
+		auth.GET("/users/:id/follow/status", deps.FollowHandler.Status)
+	}
 
 	return engine
 }
