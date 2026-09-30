@@ -40,4 +40,6 @@ type VideoDetail struct {
 	ContentType string     `json:"content_type"`
 	SizeBytes   int64      `json:"size_bytes"`
 	Status      string     `json:"status"`
+	LikeCount   int64      `json:"like_count"`
+	IsLikedBy   bool       `json:"is_liked_by"`
 }

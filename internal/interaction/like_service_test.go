@@ -492,3 +492,80 @@ func TestLikeService_GetState(t *testing.T) {
 		})
 	}
 }
+
+func TestLikeService_GetLikeState(t *testing.T) {
+	tests := []struct {
+		name          string
+		viewerID      uint64
+		videoID       uint64
+		mockVideoErr  error
+		mockCount     int64
+		mockCountErr  error
+		mockExists    bool
+		mockExistsErr error
+		wantErr       error
+		wantCount     int64
+		wantIsLikedBy bool
+	}{
+		{
+			name:      "匿名用户返回基础状态",
+			videoID:   1,
+			mockCount: 8,
+			wantCount: 8,
+		},
+		{
+			name:          "登录用户返回点赞状态",
+			viewerID:      7,
+			videoID:       1,
+			mockCount:     8,
+			mockExists:    true,
+			wantCount:     8,
+			wantIsLikedBy: true,
+		},
+		{
+			name:         "视频不存在转换为 video.ErrNotFound",
+			videoID:      999,
+			mockVideoErr: video.ErrNotFound,
+			wantErr:      video.ErrNotFound,
+		},
+		{
+			name:         "计数错误保留原始错误链",
+			videoID:      1,
+			mockCountErr: errDBError,
+			wantErr:      errDBError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			videoReader := &fakeVideoReader{
+				GetByIDFunc: func(ctx context.Context, id uint64) (*video.Video, error) {
+					return nil, tt.mockVideoErr
+				},
+			}
+			likeRepo := &fakeLikeRepository{
+				CountByVideoFunc: func(ctx context.Context, videoID uint64) (int64, error) {
+					return tt.mockCount, tt.mockCountErr
+				},
+				ExistsFunc: func(ctx context.Context, userID, videoID uint64) (bool, error) {
+					return tt.mockExists, tt.mockExistsErr
+				},
+			}
+
+			svc := NewLikeService(likeRepo, videoReader)
+			count, isLikedBy, err := svc.GetLikeState(context.Background(), tt.viewerID, tt.videoID)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("expected err %v, got %v", tt.wantErr, err)
+			}
+			if err == nil {
+				if count != tt.wantCount {
+					t.Errorf("expected count %d, got %d", tt.wantCount, count)
+				}
+				if isLikedBy != tt.wantIsLikedBy {
+					t.Errorf("expected isLikedBy %v, got %v", tt.wantIsLikedBy, isLikedBy)
+				}
+			}
+		})
+	}
+}

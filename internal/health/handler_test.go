@@ -82,6 +82,6 @@ func newTestEngine() *gin.Engine {
 		HealthHandler:  health.NewHandler("test-version"),
 		UserHandler:    user.NewHandler(nil),
 		AuthMiddleware: func(c *gin.Context) { c.Next() },
-		VideoHandler:   video.NewHandler(nil),
+		VideoHandler:   video.NewHandler(nil, nil),
 	})
 }

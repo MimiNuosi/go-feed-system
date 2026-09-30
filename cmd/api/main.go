@@ -89,7 +89,6 @@ func run() error {
 
 	videoRepository := video.NewGORMRepository(db)
 	videoService := video.NewService(videoRepository, videoStorage, userService, logger)
-	videoHandler := video.NewHandler(videoService)
 
 	followRepository := interaction.NewGORMFollowRepository(db)
 	followService := interaction.NewFollowService(followRepository, userService)
@@ -98,15 +97,17 @@ func run() error {
 	likeRepository := interaction.NewGORMLikeRepository(db)
 	likeService := interaction.NewLikeService(likeRepository, videoService)
 	likeHandler := interaction.NewLikeHandler(likeService, logger)
+	videoHandler := video.NewHandler(videoService, likeService)
 
 	engine := router.New(router.Dependencies{
-		Logger:         logger,
-		HealthHandler:  health.NewHandler(version),
-		UserHandler:    userHandler,
-		AuthMiddleware: middleware.Auth(tokenManager, logger),
-		VideoHandler:   videoHandler,
-		FollowHandler:  followHandler,
-		LikeHandler:    likeHandler,
+		Logger:                 logger,
+		HealthHandler:          health.NewHandler(version),
+		UserHandler:            userHandler,
+		AuthMiddleware:         middleware.Auth(tokenManager, logger),
+		OptionalAuthMiddleware: middleware.OptionalAuth(tokenManager, logger),
+		VideoHandler:           videoHandler,
+		FollowHandler:          followHandler,
+		LikeHandler:            likeHandler,
 	})
 
 	server := &http.Server{

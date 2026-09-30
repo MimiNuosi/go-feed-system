@@ -3,15 +3,36 @@ package video
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gin-gonic/gin"
 	"go-feed-system/pkg/authctx"
+
+	"github.com/gin-gonic/gin"
 )
+
+// Fake LikeStateReader
+type fakeLikeStateReader struct {
+	GetLikeStateFunc func(ctx context.Context, viewerID, videoID uint64) (int64, bool, error)
+	CallCount        int
+	LastViewerID     uint64
+	LastVideoID      uint64
+}
+
+func (f *fakeLikeStateReader) GetLikeState(ctx context.Context, viewerID, videoID uint64) (int64, bool, error) {
+	f.CallCount++
+	f.LastViewerID = viewerID
+	f.LastVideoID = videoID
+	if f.GetLikeStateFunc != nil {
+		return f.GetLikeStateFunc(ctx, viewerID, videoID)
+	}
+	return 0, false, nil
+}
 
 // 辅助函数：构造 multipart 请求体
 func createMultipartBody(t *testing.T, filename string, fileSize int) (io.Reader, string) {
@@ -115,7 +136,7 @@ func TestHandler_Upload(t *testing.T) {
 			fakeSvc := &fakeVideoService{UploadFunc: tt.mockSvcFunc}
 
 			// 构造 Handler 和 Router
-			handler := NewHandler(fakeSvc)
+			handler := NewHandler(fakeSvc, nil)
 			r := gin.New()
 
 			// 模拟 Auth 中间件：如果 hasAuth 为 true，则注入 UserID
@@ -155,52 +176,145 @@ func TestHandler_GetDetail(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
-		name           string
-		videoID        string
-		mockSvcFunc    func(ctx context.Context, id uint64) (*VideoDetail, error)
+		name    string
+		videoID string
+		hasAuth bool   // 是否模拟登录
+		userID  uint64 // 模拟登录的用户ID
+
+		mockVideoFunc func(ctx context.Context, id uint64) (*VideoDetail, error)
+		mockLikeFunc  func(ctx context.Context, viewerID, videoID uint64) (int64, bool, error)
+
 		wantStatusCode int
+		wantLikeCount  int64
+		wantIsLikedBy  bool
+		wantLikeCalls  int    // 预期调用 LikeStateReader 的次数
+		wantViewerID   uint64 // 预期传递给 LikeStateReader 的 viewerID
 	}{
 		{
-			name:    "成功获取详情 200",
+			name:    "成功获取详情 200（匿名用户）",
 			videoID: "1",
-			mockSvcFunc: func(ctx context.Context, id uint64) (*VideoDetail, error) {
-				return &VideoDetail{
-					ID:     1,
-					Title:  "test video",
-					Author: AuthorInfo{ID: 1, Username: "user001"},
-				}, nil
+			hasAuth: false, // 匿名
+			mockVideoFunc: func(ctx context.Context, id uint64) (*VideoDetail, error) {
+				return &VideoDetail{ID: 1, Title: "test video", Author: AuthorInfo{ID: 1, Username: "user001"}}, nil
+			},
+			mockLikeFunc: func(ctx context.Context, viewerID, videoID uint64) (int64, bool, error) {
+				return 100, false, nil // 匿名用户即使视频有点赞，isLikedBy 也为 false
 			},
 			wantStatusCode: http.StatusOK,
+			wantLikeCount:  100,
+			wantIsLikedBy:  false,
+			wantLikeCalls:  1, // 核心：即使是匿名，也要查点赞总数
+			wantViewerID:   0, // 核心：匿名传 0
 		},
 		{
-			name:           "非法 ID 400",
-			videoID:        "abc",
-			wantStatusCode: http.StatusBadRequest,
+			name:    "成功获取详情 200（登录用户已点赞）",
+			videoID: "1",
+			hasAuth: true,
+			userID:  123,
+			mockVideoFunc: func(ctx context.Context, id uint64) (*VideoDetail, error) {
+				return &VideoDetail{ID: 1, Title: "test video"}, nil
+			},
+			mockLikeFunc: func(ctx context.Context, viewerID, videoID uint64) (int64, bool, error) {
+				return 5, true, nil
+			},
+			wantStatusCode: http.StatusOK,
+			wantLikeCount:  5,
+			wantIsLikedBy:  true,
+			wantLikeCalls:  1,
+			wantViewerID:   123, // 核心：登录传真实 ID
 		},
 		{
-			name:    "视频不存在 404",
+			name:    "视频不存在 404，不应继续查点赞",
 			videoID: "999",
-			mockSvcFunc: func(ctx context.Context, id uint64) (*VideoDetail, error) {
+			hasAuth: true,
+			mockVideoFunc: func(ctx context.Context, id uint64) (*VideoDetail, error) {
 				return nil, ErrNotFound
 			},
 			wantStatusCode: http.StatusNotFound,
+			wantLikeCalls:  0, // 核心：视频没找到，绝对不能去查点赞
+		},
+		{
+			name:    "点赞状态查询失败 404",
+			videoID: "1",
+			hasAuth: true,
+			mockVideoFunc: func(ctx context.Context, id uint64) (*VideoDetail, error) {
+				return &VideoDetail{ID: 1}, nil
+			},
+			mockLikeFunc: func(ctx context.Context, viewerID, videoID uint64) (int64, bool, error) {
+				return 0, false, ErrNotFound // 模拟点赞模块返回视频不存在
+			},
+			wantStatusCode: http.StatusNotFound, // 整个详情接口映射为 404
+			wantLikeCalls:  1,
+		},
+		{
+			name:    "点赞状态查询内部错误 500",
+			videoID: "1",
+			hasAuth: true,
+			mockVideoFunc: func(ctx context.Context, id uint64) (*VideoDetail, error) {
+				return &VideoDetail{ID: 1}, nil
+			},
+			mockLikeFunc: func(ctx context.Context, viewerID, videoID uint64) (int64, bool, error) {
+				return 0, false, errors.New("db down")
+			},
+			wantStatusCode: http.StatusInternalServerError,
+			wantLikeCalls:  1,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fakeSvc := &fakeVideoService{GetDetailFunc: tt.mockSvcFunc}
-			handler := NewHandler(fakeSvc)
+			// 构造 Fake Service
+			fakeSvc := &fakeVideoService{GetDetailFunc: tt.mockVideoFunc}
+			// 构造 Fake LikeReader
+			fakeLike := &fakeLikeStateReader{GetLikeStateFunc: tt.mockLikeFunc}
 
+			// 注意：这里 NewHandler 要注入 fakeLike
+			handler := NewHandler(fakeSvc, fakeLike)
 			r := gin.New()
-			r.GET("/api/v1/videos/:id", handler.GetDetail)
+
+			r.GET("/api/v1/videos/:id", func(c *gin.Context) {
+				if tt.hasAuth {
+					ctx := authctx.WithUserID(c.Request.Context(), tt.userID)
+					c.Request = c.Request.WithContext(ctx)
+				}
+				handler.GetDetail(c)
+			})
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/videos/"+tt.videoID, nil)
 			w := httptest.NewRecorder()
 			r.ServeHTTP(w, req)
 
+			// 1. 断言状态码
 			if w.Code != tt.wantStatusCode {
 				t.Errorf("expected status %d, got %d. Body: %s", tt.wantStatusCode, w.Code, w.Body.String())
+			}
+
+			// 2. 断言 LikeStateReader 调用次数与参数
+			if fakeLike.CallCount != tt.wantLikeCalls {
+				t.Errorf("expected LikeStateReader called %d times, got %d", tt.wantLikeCalls, fakeLike.CallCount)
+			}
+			if tt.wantLikeCalls > 0 && fakeLike.LastViewerID != tt.wantViewerID {
+				t.Errorf("expected viewerID %d passed to LikeStateReader, got %d", tt.wantViewerID, fakeLike.LastViewerID)
+			}
+
+			// 3. 如果状态码是 200，验证 JSON 响应体中的聚合字段
+			if tt.wantStatusCode == http.StatusOK {
+				var resp map[string]interface{}
+				if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+					t.Fatalf("failed to decode body: %v", err)
+				}
+
+				// 验证 like_count 字段
+				gotLikeCount := int64(resp["like_count"].(float64))
+				if gotLikeCount != tt.wantLikeCount {
+					t.Errorf("expected like_count %d, got %d", tt.wantLikeCount, gotLikeCount)
+				}
+
+				// 验证 is_liked_by 字段
+				gotIsLikedBy := resp["is_liked_by"].(bool)
+				if gotIsLikedBy != tt.wantIsLikedBy {
+					t.Errorf("expected is_liked_by %v, got %v", tt.wantIsLikedBy, gotIsLikedBy)
+				}
 			}
 		})
 	}
@@ -264,7 +378,7 @@ func TestHandler_File(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fakeSvc := &fakeVideoService{OpenFileFunc: tt.mockSvcFunc}
-			handler := NewHandler(fakeSvc)
+			handler := NewHandler(fakeSvc, nil)
 
 			r := gin.New()
 			r.GET("/api/v1/videos/:id/file", handler.File)

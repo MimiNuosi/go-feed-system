@@ -13,13 +13,14 @@ import (
 )
 
 type Dependencies struct {
-	Logger         *slog.Logger
-	HealthHandler  *health.Handler
-	UserHandler    *user.Handler
-	AuthMiddleware gin.HandlerFunc
-	VideoHandler   *video.Handler
-	FollowHandler  *interaction.FollowHandler
-	LikeHandler    *interaction.LikeHandler
+	Logger                 *slog.Logger
+	HealthHandler          *health.Handler
+	UserHandler            *user.Handler
+	AuthMiddleware         gin.HandlerFunc
+	OptionalAuthMiddleware gin.HandlerFunc
+	VideoHandler           *video.Handler
+	FollowHandler          *interaction.FollowHandler
+	LikeHandler            *interaction.LikeHandler
 }
 
 // New 组装 HTTP 路由和中间件。
@@ -36,7 +37,11 @@ func New(deps Dependencies) *gin.Engine {
 	// 基础设施探针不放进 /api/v1，避免业务版本升级影响运维配置。
 	engine.GET("/livez", deps.HealthHandler.Live)
 	engine.GET("/readyz", deps.HealthHandler.Ready)
-	engine.GET("/api/v1/videos/:id", deps.VideoHandler.GetDetail)
+	engine.GET(
+		"/api/v1/videos/:id",
+		deps.OptionalAuthMiddleware,
+		deps.VideoHandler.GetDetail,
+	)
 	engine.GET("/api/v1/videos/:id/file", deps.VideoHandler.File)
 
 	v1 := engine.Group("/api/v1")

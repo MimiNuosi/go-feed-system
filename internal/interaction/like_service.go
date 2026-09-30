@@ -120,3 +120,19 @@ func (s *LikeService) GetState(ctx context.Context, userID, videoID uint64) (*Li
 
 	return state, nil
 }
+
+// GetLikeState 是给 video 包使用的窄接口适配方法。
+//
+// 它将互动领域的错误转换成 video 包可以识别的错误，
+// 避免 video 包为了处理详情响应而反向依赖 interaction 包。
+func (s *LikeService) GetLikeState(ctx context.Context, viewerID, videoID uint64) (int64, bool, error) {
+	state, err := s.GetState(ctx, viewerID, videoID)
+	if err != nil {
+		// 处理 ErrInvalidTarget
+		if errors.Is(err, ErrInvalidTarget) {
+			return 0, false, video.ErrNotFound
+		}
+		return 0, false, fmt.Errorf("get video state err: %w", err)
+	}
+	return state.Count, state.IsLikedBy, nil
+}

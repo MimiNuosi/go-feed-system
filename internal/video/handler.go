@@ -20,13 +20,23 @@ type VideoService interface {
 	OpenFile(ctx context.Context, id uint64) (io.ReadSeekCloser, *Video, error)
 }
 
-type Handler struct {
-	service VideoService
+// LikeStateReader 是视频详情需要的点赞状态读取能力。
+//
+// 接口定义在 video 包中，interaction.LikeService 可以隐式实现它。
+// 这样 Video 模块不需要导入 interaction，避免形成包依赖环。
+type LikeStateReader interface {
+	GetLikeState(ctx context.Context, viewerID, videoID uint64) (count int64, isLikedBy bool, err error)
 }
 
-func NewHandler(service VideoService) *Handler {
+type Handler struct {
+	service    VideoService
+	likeReader LikeStateReader
+}
+
+func NewHandler(service VideoService, likeReader LikeStateReader) *Handler {
 	return &Handler{
-		service: service,
+		service:    service,
+		likeReader: likeReader,
 	}
 }
 
@@ -168,6 +178,27 @@ func (h *Handler) GetDetail(c *gin.Context) {
 		return
 	}
 
+	// 1. 获取可选鉴权注入的 userID
+	// 匿名访问时 ok 为 false，此时 viewerID 默认就是 0，不需要写 if-else
+	viewerID, _ := authctx.UserID(c.Request.Context())
+
+	// 2. 调用 likeReader 获取点赞状态
+	count, isLikedBy, err := h.likeReader.GetLikeState(c.Request.Context(), viewerID, id)
+	if err != nil {
+		// 3. 错误处理
+		if errors.Is(err, ErrNotFound) {
+			httpx.Abort(c, http.StatusNotFound, httpx.ErrorCodeNotFound, "video not found")
+			return
+		}
+		httpx.Abort(c, http.StatusInternalServerError, httpx.ErrorCodeInternal, "internal server error")
+		return
+	}
+
+	// 4. 将 count 和 isLikedBy 写入 detail
+	detail.LikeCount = count
+	detail.IsLikedBy = isLikedBy
+
+	// 5. 返回最终的 JSON 响应
 	c.JSON(http.StatusOK, detail)
 }
 

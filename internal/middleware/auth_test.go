@@ -15,12 +15,14 @@ import (
 
 // 定义 Fake TokenParser
 type fakeTokenParser struct {
-	userID   uint64
-	err      error
-	gotToken string
+	userID    uint64
+	err       error
+	gotToken  string
+	CallCount int
 }
 
 func (f *fakeTokenParser) Parse(raw string) (uint64, error) {
+	f.CallCount++
 	f.gotToken = raw
 	return f.userID, f.err
 }
