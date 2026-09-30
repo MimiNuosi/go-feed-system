@@ -19,6 +19,7 @@ type Dependencies struct {
 	AuthMiddleware gin.HandlerFunc
 	VideoHandler   *video.Handler
 	FollowHandler  *interaction.FollowHandler
+	LikeHandler    *interaction.LikeHandler
 }
 
 // New 组装 HTTP 路由和中间件。
@@ -55,6 +56,10 @@ func New(deps Dependencies) *gin.Engine {
 		auth.POST("/users/:id/follow", deps.FollowHandler.Follow)
 		auth.DELETE("/users/:id/follow", deps.FollowHandler.Unfollow)
 		auth.GET("/users/:id/follow/status", deps.FollowHandler.Status)
+
+		// 互动模块
+		auth.POST("/videos/:id/like", deps.LikeHandler.Like)
+		auth.DELETE("/videos/:id/like", deps.LikeHandler.Unlike)
 	}
 
 	return engine

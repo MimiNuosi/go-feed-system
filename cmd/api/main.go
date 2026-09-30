@@ -95,6 +95,10 @@ func run() error {
 	followService := interaction.NewFollowService(followRepository, userService)
 	followHandler := interaction.NewFollowHandler(followService, logger)
 
+	likeRepository := interaction.NewGORMLikeRepository(db)
+	likeService := interaction.NewLikeService(likeRepository, videoService)
+	likeHandler := interaction.NewLikeHandler(likeService, logger)
+
 	engine := router.New(router.Dependencies{
 		Logger:         logger,
 		HealthHandler:  health.NewHandler(version),
@@ -102,6 +106,7 @@ func run() error {
 		AuthMiddleware: middleware.Auth(tokenManager, logger),
 		VideoHandler:   videoHandler,
 		FollowHandler:  followHandler,
+		LikeHandler:    likeHandler,
 	})
 
 	server := &http.Server{
