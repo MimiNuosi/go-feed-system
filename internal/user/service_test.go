@@ -10,9 +10,12 @@ import (
 	"time"
 )
 
+var errUserRepository = errors.New("user repository error")
+
 // 1. 只 Mock Repository（因为它连数据库）
 type fakeRepository struct {
-	users map[string]*User // 用 map 模拟数据库表
+	users        map[string]*User // 用 map 模拟数据库表
+	findByIDsErr error
 }
 
 func (r *fakeRepository) Create(ctx context.Context, u *User) error {
@@ -32,6 +35,25 @@ func (r *fakeRepository) FindByEmail(ctx context.Context, email string) (*User, 
 func (r *fakeRepository) FindByID(ctx context.Context, id uint64) (*User, error) {
 	// ... 略
 	return nil, ErrNotFound
+}
+
+func (r *fakeRepository) FindByIDs(ctx context.Context, ids []uint64) ([]User, error) {
+	if r.findByIDsErr != nil {
+		return nil, r.findByIDsErr
+	}
+
+	idSet := make(map[uint64]bool, len(ids))
+	for _, id := range ids {
+		idSet[id] = true
+	}
+
+	result := make([]User, 0, len(ids))
+	for _, u := range r.users {
+		if idSet[u.ID] {
+			result = append(result, *u)
+		}
+	}
+	return result, nil
 }
 
 // 2. 编写测试
@@ -166,6 +188,67 @@ func TestService_Login(t *testing.T) {
 
 			if tt.wantErr == nil && accessToken.Value == "" {
 				t.Error("expected access token to be non-empty")
+			}
+		})
+	}
+}
+
+func TestService_GetByIDs(t *testing.T) {
+	tests := []struct {
+		name        string
+		ids         []uint64
+		prepare     func(repo *fakeRepository)
+		wantErr     error
+		wantUserIDs []uint64
+	}{
+		{
+			name: "空 ID 返回空 map",
+			ids:  nil,
+		},
+		{
+			name: "批量查询并忽略缺失 ID",
+			ids:  []uint64{1, 3, 999},
+			prepare: func(repo *fakeRepository) {
+				repo.users["u1@example.com"] = &User{ID: 1, Username: "u1", Email: "u1@example.com"}
+				repo.users["u2@example.com"] = &User{ID: 2, Username: "u2", Email: "u2@example.com"}
+				repo.users["u3@example.com"] = &User{ID: 3, Username: "u3", Email: "u3@example.com"}
+			},
+			wantUserIDs: []uint64{1, 3},
+		},
+		{
+			name: "Repository 错误被包装",
+			ids:  []uint64{1},
+			prepare: func(repo *fakeRepository) {
+				repo.findByIDsErr = errUserRepository
+			},
+			wantErr: errUserRepository,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeRepository{users: make(map[string]*User)}
+			if tt.prepare != nil {
+				tt.prepare(repo)
+			}
+
+			svc := NewService(repo, nil, nil)
+			users, err := svc.GetByIDs(context.Background(), tt.ids)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("expected err %v, got %v", tt.wantErr, err)
+			}
+			if err != nil {
+				return
+			}
+
+			if len(users) != len(tt.wantUserIDs) {
+				t.Fatalf("expected %d users, got %d", len(tt.wantUserIDs), len(users))
+			}
+			for _, id := range tt.wantUserIDs {
+				if users[id] == nil {
+					t.Errorf("expected user %d in result", id)
+				}
 			}
 		})
 	}

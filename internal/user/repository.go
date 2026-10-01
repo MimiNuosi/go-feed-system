@@ -17,6 +17,7 @@ type Repository interface {
 	Create(ctx context.Context, user *User) error
 	FindByEmail(ctx context.Context, email string) (*User, error)
 	FindByID(ctx context.Context, id uint64) (*User, error)
+	FindByIDs(ctx context.Context, ids []uint64) ([]User, error)
 }
 
 type GORMRepository struct {
@@ -65,4 +66,19 @@ func (r *GORMRepository) FindByID(ctx context.Context, id uint64) (*User, error)
 		return nil, fmt.Errorf("find user by id: %w", err)
 	}
 	return &user, nil
+}
+
+func (r *GORMRepository) FindByIDs(ctx context.Context, ids []uint64) ([]User, error) {
+	// 核心：空切片直接返回，不要查库
+	if len(ids) == 0 {
+		return []User{}, nil
+	}
+
+	var users []User
+	// 使用 IN 关键字一次性查出所有用户
+	err := r.db.WithContext(ctx).Where("id IN ?", ids).Find(&users).Error
+	if err != nil {
+		return nil, fmt.Errorf("find users by ids: %w", err)
+	}
+	return users, nil
 }

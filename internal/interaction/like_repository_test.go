@@ -8,17 +8,19 @@ import (
 
 	"go-feed-system/internal/user"
 	"go-feed-system/internal/video"
+
+	"gorm.io/gorm"
 )
 
 // 辅助函数：为当前子测试创建种子用户和种子视频
 // 返回 userID, videoID，如果创建失败直接 t.Fatal 终止测试
-func createSeedData(t *testing.T, repo *GORMLikeRepository) (uint64, uint64) {
+func createSeedData(t *testing.T, db *gorm.DB) (uint64, uint64) {
 	u := &user.User{
 		Username:     "like_user",
 		Email:        "like_user@example.com",
 		PasswordHash: "hash",
 	}
-	if err := repo.db.Create(u).Error; err != nil {
+	if err := db.Create(u).Error; err != nil {
 		t.Fatalf("failed to create seed user: %v", err)
 	}
 
@@ -32,7 +34,7 @@ func createSeedData(t *testing.T, repo *GORMLikeRepository) (uint64, uint64) {
 		SizeBytes:        1024,
 		Status:           "ready",
 	}
-	if err := repo.db.Create(v).Error; err != nil {
+	if err := db.Create(v).Error; err != nil {
 		t.Fatalf("failed to create seed video: %v", err)
 	}
 
@@ -45,7 +47,7 @@ func TestGORMLikeRepository(t *testing.T) {
 	t.Run("成功点赞", func(t *testing.T) {
 		tx := openTestDB(t)
 		repo := NewGORMLikeRepository(tx)
-		userID, videoID := createSeedData(t, repo)
+		userID, videoID := createSeedData(t, tx)
 
 		err := repo.Create(context.Background(), userID, videoID)
 		if err != nil {
@@ -56,7 +58,7 @@ func TestGORMLikeRepository(t *testing.T) {
 	t.Run("重复点赞，返回 ErrAlreadyLiked", func(t *testing.T) {
 		tx := openTestDB(t)
 		repo := NewGORMLikeRepository(tx)
-		userID, videoID := createSeedData(t, repo)
+		userID, videoID := createSeedData(t, tx)
 
 		// 先创建一个点赞记录
 		if err := repo.Create(context.Background(), userID, videoID); err != nil {
@@ -73,7 +75,7 @@ func TestGORMLikeRepository(t *testing.T) {
 	t.Run("成功取消点赞", func(t *testing.T) {
 		tx := openTestDB(t)
 		repo := NewGORMLikeRepository(tx)
-		userID, videoID := createSeedData(t, repo)
+		userID, videoID := createSeedData(t, tx)
 
 		// 先创建一个点赞记录
 		if err := repo.Create(context.Background(), userID, videoID); err != nil {
@@ -90,7 +92,7 @@ func TestGORMLikeRepository(t *testing.T) {
 	t.Run("取消未点赞的视频，应幂等成功", func(t *testing.T) {
 		tx := openTestDB(t)
 		repo := NewGORMLikeRepository(tx)
-		userID, videoID := createSeedData(t, repo)
+		userID, videoID := createSeedData(t, tx)
 
 		// 直接取消不存在的点赞记录
 		err := repo.Delete(context.Background(), userID, videoID)
@@ -102,7 +104,7 @@ func TestGORMLikeRepository(t *testing.T) {
 	t.Run("检查点赞状态", func(t *testing.T) {
 		tx := openTestDB(t)
 		repo := NewGORMLikeRepository(tx)
-		userID, videoID := createSeedData(t, repo)
+		userID, videoID := createSeedData(t, tx)
 
 		// 1. 未点赞时，应为 false
 		exists, err := repo.Exists(context.Background(), userID, videoID)
@@ -131,7 +133,7 @@ func TestGORMLikeRepository(t *testing.T) {
 		repo := NewGORMLikeRepository(tx)
 
 		// 创建一个作者和一个视频
-		_, videoID := createSeedData(t, repo)
+		_, videoID := createSeedData(t, tx)
 
 		// 创建三个不同的用户，都对同一个视频点赞
 		for i := 1; i <= 3; i++ {
@@ -162,7 +164,7 @@ func TestGORMLikeRepository(t *testing.T) {
 	t.Run("视频被删除后点赞，返回 ErrInvalidTarget", func(t *testing.T) {
 		tx := openTestDB(t)
 		repo := NewGORMLikeRepository(tx)
-		userID, videoID := createSeedData(t, repo)
+		userID, videoID := createSeedData(t, tx)
 
 		// 物理删除视频，制造外键孤儿
 		if err := tx.Exec("DELETE FROM videos WHERE id = ?", videoID).Error; err != nil {

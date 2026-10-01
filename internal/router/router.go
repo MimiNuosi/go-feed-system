@@ -21,6 +21,7 @@ type Dependencies struct {
 	VideoHandler           *video.Handler
 	FollowHandler          *interaction.FollowHandler
 	LikeHandler            *interaction.LikeHandler
+	CommentHandler         *interaction.CommentHandler
 }
 
 // New 组装 HTTP 路由和中间件。
@@ -49,6 +50,7 @@ func New(deps Dependencies) *gin.Engine {
 	// 1. 公开接口（无需鉴权）
 	v1.POST("/auth/register", deps.UserHandler.Register)
 	v1.POST("/auth/login", deps.UserHandler.Login)
+	v1.GET("/videos/:id/comments", deps.CommentHandler.List)
 
 	// 2. 需要鉴权的接口组
 	auth := v1.Group("")
@@ -65,6 +67,8 @@ func New(deps Dependencies) *gin.Engine {
 		// 互动模块
 		auth.POST("/videos/:id/like", deps.LikeHandler.Like)
 		auth.DELETE("/videos/:id/like", deps.LikeHandler.Unlike)
+		auth.POST("/videos/:id/comments", deps.CommentHandler.Create)
+		auth.DELETE("/comments/:id", deps.CommentHandler.Delete)
 	}
 
 	return engine

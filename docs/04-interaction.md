@@ -8,6 +8,66 @@
 4.3 视频评论
 ```
 
+## 4.3 视频评论
+
+第一阶段只支持一级评论，不支持回复树。
+
+### 接口设计
+
+```http
+GET    /api/v1/videos/:id/comments
+POST   /api/v1/videos/:id/comments
+DELETE /api/v1/comments/:id
+```
+
+- 列表接口公开，使用 ID 游标分页。
+- 发布和删除需要 JWT。
+- 只有评论作者可以删除自己的评论。
+- 重复删除返回 204，保持幂等。
+
+### 建表 SQL
+
+按照项目约束，Codex 不自动修改 migrations。你需要自己保存并执行迁移。
+
+```sql
+CREATE TABLE comments (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    video_id BIGINT UNSIGNED NOT NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
+    content VARCHAR(1000) NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+        ON UPDATE CURRENT_TIMESTAMP(3),
+    deleted_at DATETIME(3) NULL,
+    PRIMARY KEY (id),
+    KEY idx_comments_video_visible (video_id, deleted_at, id),
+    KEY idx_comments_user (user_id),
+    CONSTRAINT fk_comments_video
+        FOREIGN KEY (video_id) REFERENCES videos (id),
+    CONSTRAINT fk_comments_user
+        FOREIGN KEY (user_id) REFERENCES users (id)
+) ENGINE=InnoDB
+  DEFAULT CHARACTER SET utf8mb4
+  COLLATE utf8mb4_0900_ai_ci;
+```
+
+### 分页规则
+
+- 首页不传 `cursor`，从最新评论开始查询。
+- 后续页传 `cursor=<上一页最后一条评论 ID>`。
+- 查询条件使用 `id < cursor`，排序使用 `id DESC`。
+- 默认 `page_size=20`，最大为 100。
+- Repository 多查一条用于计算 `has_more`。
+
+### 当前任务
+
+1. 自己创建并执行 comments 表迁移。
+2. 完成 `GORMCommentRepository`。
+3. 完成 `CommentService` 的发布、列表和删除。
+4. 为列表补充批量用户信息查询，避免 N+1。
+5. 补 Repository、Service、Handler 测试。
+6. 接入 Router 和 main。
+
 ## 4.2 视频点赞
 
 ### 接口设计

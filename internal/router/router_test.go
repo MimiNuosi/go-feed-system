@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"go-feed-system/internal/health"
@@ -73,11 +74,46 @@ func (f *fakeRouteTokenParser) Parse(raw string) (uint64, error) {
 	return f.userID, f.err
 }
 
+type fakeCommentRouteService struct {
+	createCalls int
+	listCalls   int
+	deleteCalls int
+}
+
+func (f *fakeCommentRouteService) Create(
+	ctx context.Context,
+	userID, videoID uint64,
+	content string,
+) (*interaction.Comment, error) {
+	f.createCalls++
+	return &interaction.Comment{
+		ID:      1,
+		VideoID: videoID,
+		UserID:  userID,
+		Content: content,
+	}, nil
+}
+
+func (f *fakeCommentRouteService) List(
+	ctx context.Context,
+	videoID, cursor uint64,
+	pageSize int,
+) (*interaction.CommentPage, error) {
+	f.listCalls++
+	return &interaction.CommentPage{Items: []interaction.CommentItem{}}, nil
+}
+
+func (f *fakeCommentRouteService) Delete(ctx context.Context, userID, commentID uint64) error {
+	f.deleteCalls++
+	return nil
+}
+
 func newTestEngine(
 	logger *slog.Logger,
 	authMiddleware gin.HandlerFunc,
 	optionalAuthMiddleware gin.HandlerFunc,
 	likeService *fakeLikeRouteService,
+	commentService *fakeCommentRouteService,
 ) *gin.Engine {
 	return New(Dependencies{
 		Logger:                 logger,
@@ -88,6 +124,7 @@ func newTestEngine(
 		VideoHandler:           video.NewHandler(&fakeVideoRouteService{}, likeService),
 		FollowHandler:          interaction.NewFollowHandler(nil, logger),
 		LikeHandler:            interaction.NewLikeHandler(likeService, logger),
+		CommentHandler:         interaction.NewCommentHandler(commentService, logger),
 	})
 }
 
@@ -100,6 +137,7 @@ func TestMethodNotAllowed(t *testing.T) {
 		func(c *gin.Context) { c.Next() },
 		func(c *gin.Context) { c.Next() },
 		&fakeLikeRouteService{},
+		&fakeCommentRouteService{},
 	)
 
 	t.Run("POST /livez should return 405", func(t *testing.T) {
@@ -130,6 +168,7 @@ func TestLikeRoutes(t *testing.T) {
 		authMiddleware,
 		func(c *gin.Context) { c.Next() },
 		likeService,
+		&fakeCommentRouteService{},
 	)
 
 	tests := []struct {
@@ -224,6 +263,7 @@ func TestVideoDetailOptionalAuth(t *testing.T) {
 				func(c *gin.Context) { c.Next() },
 				middleware.OptionalAuth(parser, logger),
 				likeService,
+				&fakeCommentRouteService{},
 			)
 
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/videos/2", nil)
@@ -247,4 +287,67 @@ func TestVideoDetailOptionalAuth(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCommentRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	commentService := &fakeCommentRouteService{}
+	authMiddleware := func(c *gin.Context) {
+		ctx := authctx.WithUserID(c.Request.Context(), 1)
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	}
+	engine := newTestEngine(
+		logger,
+		authMiddleware,
+		func(c *gin.Context) { c.Next() },
+		&fakeLikeRouteService{},
+		commentService,
+	)
+
+	t.Run("public list route", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/videos/2/comments", nil)
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, req)
+
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected status %d, got %d", http.StatusOK, recorder.Code)
+		}
+		if commentService.listCalls != 1 {
+			t.Fatalf("expected List called once, got %d", commentService.listCalls)
+		}
+	})
+
+	t.Run("create comment route", func(t *testing.T) {
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/api/v1/videos/2/comments",
+			strings.NewReader(`{"content":"hello"}`),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, req)
+
+		if recorder.Code != http.StatusCreated {
+			t.Fatalf("expected status %d, got %d", http.StatusCreated, recorder.Code)
+		}
+		if commentService.createCalls != 1 {
+			t.Fatalf("expected Create called once, got %d", commentService.createCalls)
+		}
+	})
+
+	t.Run("delete comment route", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodDelete, "/api/v1/comments/2", nil)
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, req)
+
+		if recorder.Code != http.StatusNoContent {
+			t.Fatalf("expected status %d, got %d", http.StatusNoContent, recorder.Code)
+		}
+		if commentService.deleteCalls != 1 {
+			t.Fatalf("expected Delete called once, got %d", commentService.deleteCalls)
+		}
+	})
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"go-feed-system/internal/health"
+	"go-feed-system/internal/interaction"
 	"go-feed-system/internal/router"
 	"go-feed-system/internal/user"
 	"go-feed-system/internal/video"
@@ -83,5 +84,6 @@ func newTestEngine() *gin.Engine {
 		UserHandler:    user.NewHandler(nil),
 		AuthMiddleware: func(c *gin.Context) { c.Next() },
 		VideoHandler:   video.NewHandler(nil, nil),
+		CommentHandler: interaction.NewCommentHandler(nil, logger),
 	})
 }

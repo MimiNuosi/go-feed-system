@@ -22,6 +22,7 @@ const (
 	ErrorCodeInvalidCredentials ErrorCode = "INVALID_CREDENTIALS"
 	ErrorCodeNotFound           ErrorCode = "NOT_FOUND"
 	ErrorCodeConflict           ErrorCode = "CONFLICT"
+	ErrorCodeForbidden          ErrorCode = "FORBIDDEN"
 	ErrorCodeInternal           ErrorCode = "INTERNAL"
 )
 
@@ -63,6 +64,8 @@ func StatusCode(code ErrorCode) int {
 		return http.StatusNotFound
 	case ErrorCodeConflict:
 		return http.StatusConflict
+	case ErrorCodeForbidden:
+		return http.StatusForbidden
 	case ErrorCodeInternal:
 		fallthrough
 	default:

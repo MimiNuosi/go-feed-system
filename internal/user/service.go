@@ -95,3 +95,20 @@ func (s *Service) GetByID(ctx context.Context, id uint64) (*User, error) {
 
 	return user, nil
 }
+
+func (s *Service) GetByIDs(ctx context.Context, ids []uint64) (map[uint64]*User, error) {
+	if len(ids) == 0 {
+		return make(map[uint64]*User), nil
+	}
+
+	users, err := s.users.FindByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("get users by ids: %w", err)
+	}
+
+	result := make(map[uint64]*User, len(users))
+	for i := range users {
+		result[users[i].ID] = &users[i]
+	}
+	return result, nil
+}

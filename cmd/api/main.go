@@ -97,6 +97,11 @@ func run() error {
 	likeRepository := interaction.NewGORMLikeRepository(db)
 	likeService := interaction.NewLikeService(likeRepository, videoService)
 	likeHandler := interaction.NewLikeHandler(likeService, logger)
+
+	commentRepository := interaction.NewGORMCommentRepository(db)
+	commentService := interaction.NewCommentService(commentRepository, videoService, userService)
+	commentHandler := interaction.NewCommentHandler(commentService, logger)
+
 	videoHandler := video.NewHandler(videoService, likeService)
 
 	engine := router.New(router.Dependencies{
@@ -108,6 +113,7 @@ func run() error {
 		VideoHandler:           videoHandler,
 		FollowHandler:          followHandler,
 		LikeHandler:            likeHandler,
+		CommentHandler:         commentHandler,
 	})
 
 	server := &http.Server{

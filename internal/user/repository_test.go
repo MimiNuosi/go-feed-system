@@ -216,3 +216,52 @@ func TestGORMRepositoryFindByID(t *testing.T) {
 		})
 	}
 }
+
+func TestGORMRepositoryFindByIDs(t *testing.T) {
+	t.Run("批量查询已存在用户并忽略缺失 ID", func(t *testing.T) {
+		tx := openTestDB(t)
+		repo := NewGORMRepository(tx)
+
+		u1 := &User{Username: "batch_u1", Email: "batch_u1@example.com"}
+		u2 := &User{Username: "batch_u2", Email: "batch_u2@example.com"}
+		u3 := &User{Username: "batch_u3", Email: "batch_u3@example.com"}
+		for _, u := range []*User{u1, u2, u3} {
+			if err := repo.Create(context.Background(), u); err != nil {
+				t.Fatalf("create seed user: %v", err)
+			}
+		}
+
+		users, err := repo.FindByIDs(context.Background(), []uint64{
+			u1.ID,
+			u3.ID,
+			999999,
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if len(users) != 2 {
+			t.Fatalf("expected 2 users, got %d", len(users))
+		}
+
+		found := make(map[uint64]bool, len(users))
+		for _, u := range users {
+			found[u.ID] = true
+		}
+		if !found[u1.ID] || !found[u3.ID] {
+			t.Fatalf("expected IDs %d and %d, got %+v", u1.ID, u3.ID, users)
+		}
+	})
+
+	t.Run("空 ID 切片不访问数据库", func(t *testing.T) {
+		tx := openTestDB(t)
+		repo := NewGORMRepository(tx)
+
+		users, err := repo.FindByIDs(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if len(users) != 0 {
+			t.Fatalf("expected empty result, got %d users", len(users))
+		}
+	})
+}
