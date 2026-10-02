@@ -13,21 +13,28 @@ var errDBError = errors.New("database connection lost")
 
 // 1. Fake LikeRepository
 type fakeLikeRepository struct {
-	CreateFunc       func(ctx context.Context, userID, videoID uint64) error
-	DeleteFunc       func(ctx context.Context, userID, videoID uint64) error
-	ExistsFunc       func(ctx context.Context, userID, videoID uint64) (bool, error)
-	CountByVideoFunc func(ctx context.Context, videoID uint64) (int64, error)
+	CreateFunc              func(ctx context.Context, userID, videoID uint64) error
+	DeleteFunc              func(ctx context.Context, userID, videoID uint64) error
+	ExistsFunc              func(ctx context.Context, userID, videoID uint64) (bool, error)
+	CountByVideoFunc        func(ctx context.Context, videoID uint64) (int64, error)
+	CountByVideoIDsFunc     func(ctx context.Context, videoIDs []uint64) (map[uint64]int64, error)
+	LikedVideoIDsByUserFunc func(ctx context.Context, userID uint64, videoIDs []uint64) (map[uint64]bool, error)
 
 	LastUserID        uint64
 	LastVideoID       uint64
 	LastCountVideoID  uint64 // 记录 Count 收到的 videoID
 	LastExistsUserID  uint64 // 记录 Exists 收到的 userID
 	LastExistsVideoID uint64 // 记录 Exists 收到的 videoID
+	LastCountVideoIDs []uint64
+	LastLikedUserID   uint64
+	LastLikedVideoIDs []uint64
 
-	CreateCallCount int
-	DeleteCallCount int
-	ExistsCallCount int
-	CountCallCount  int
+	CreateCallCount          int
+	DeleteCallCount          int
+	ExistsCallCount          int
+	CountCallCount           int
+	CountByVideoIDsCallCount int
+	LikedVideoIDsCallCount   int
 }
 
 func (f *fakeLikeRepository) Create(ctx context.Context, userID, videoID uint64) error {
@@ -67,6 +74,29 @@ func (f *fakeLikeRepository) CountByVideoID(ctx context.Context, videoID uint64)
 		return f.CountByVideoFunc(ctx, videoID)
 	}
 	return 0, nil
+}
+
+func (f *fakeLikeRepository) CountByVideoIDs(ctx context.Context, videoIDs []uint64) (map[uint64]int64, error) {
+	f.CountByVideoIDsCallCount++
+	f.LastCountVideoIDs = videoIDs
+	if f.CountByVideoIDsFunc != nil {
+		return f.CountByVideoIDsFunc(ctx, videoIDs)
+	}
+	return make(map[uint64]int64), nil
+}
+
+func (f *fakeLikeRepository) LikedVideoIDsByUser(
+	ctx context.Context,
+	userID uint64,
+	videoIDs []uint64,
+) (map[uint64]bool, error) {
+	f.LikedVideoIDsCallCount++
+	f.LastLikedUserID = userID
+	f.LastLikedVideoIDs = videoIDs
+	if f.LikedVideoIDsByUserFunc != nil {
+		return f.LikedVideoIDsByUserFunc(ctx, userID, videoIDs)
+	}
+	return make(map[uint64]bool), nil
 }
 
 // 2. Fake VideoReader
@@ -565,6 +595,124 @@ func TestLikeService_GetLikeState(t *testing.T) {
 				if isLikedBy != tt.wantIsLikedBy {
 					t.Errorf("expected isLikedBy %v, got %v", tt.wantIsLikedBy, isLikedBy)
 				}
+			}
+		})
+	}
+}
+
+func TestLikeService_CountByVideoIDs(t *testing.T) {
+	tests := []struct {
+		name          string
+		videoIDs      []uint64
+		mockCounts    map[uint64]int64
+		mockErr       error
+		wantErr       error
+		wantCallCount int
+	}{
+		{
+			name:          "空 ID 不访问 Repository",
+			videoIDs:      nil,
+			wantCallCount: 0,
+		},
+		{
+			name:          "批量返回点赞数",
+			videoIDs:      []uint64{1, 2, 3},
+			mockCounts:    map[uint64]int64{1: 2, 3: 5},
+			wantCallCount: 1,
+		},
+		{
+			name:          "Repository 错误保留错误链",
+			videoIDs:      []uint64{1},
+			mockErr:       errDBError,
+			wantErr:       errDBError,
+			wantCallCount: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeLikeRepository{
+				CountByVideoIDsFunc: func(ctx context.Context, videoIDs []uint64) (map[uint64]int64, error) {
+					return tt.mockCounts, tt.mockErr
+				},
+			}
+			svc := NewLikeService(repo, nil)
+
+			counts, err := svc.CountByVideoIDs(context.Background(), tt.videoIDs)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("expected err %v, got %v", tt.wantErr, err)
+			}
+			if repo.CountByVideoIDsCallCount != tt.wantCallCount {
+				t.Fatalf("expected repository called %d times, got %d", tt.wantCallCount, repo.CountByVideoIDsCallCount)
+			}
+			if err == nil && len(counts) != len(tt.mockCounts) {
+				t.Fatalf("expected %d counts, got %d", len(tt.mockCounts), len(counts))
+			}
+		})
+	}
+}
+
+func TestLikeService_LikedVideoIDsByUser(t *testing.T) {
+	tests := []struct {
+		name          string
+		userID        uint64
+		videoIDs      []uint64
+		mockLiked     map[uint64]bool
+		mockErr       error
+		wantErr       error
+		wantCallCount int
+	}{
+		{
+			name:     "userID 为 0 返回参数错误",
+			userID:   0,
+			videoIDs: []uint64{1},
+			wantErr:  ErrInvalidInput,
+		},
+		{
+			name:          "空 ID 不访问 Repository",
+			userID:        1,
+			videoIDs:      nil,
+			wantCallCount: 0,
+		},
+		{
+			name:          "批量返回点赞状态",
+			userID:        1,
+			videoIDs:      []uint64{1, 2},
+			mockLiked:     map[uint64]bool{1: true},
+			wantCallCount: 1,
+		},
+		{
+			name:          "Repository 错误保留错误链",
+			userID:        1,
+			videoIDs:      []uint64{1},
+			mockErr:       errDBError,
+			wantErr:       errDBError,
+			wantCallCount: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeLikeRepository{
+				LikedVideoIDsByUserFunc: func(
+					ctx context.Context,
+					userID uint64,
+					videoIDs []uint64,
+				) (map[uint64]bool, error) {
+					return tt.mockLiked, tt.mockErr
+				},
+			}
+			svc := NewLikeService(repo, nil)
+
+			liked, err := svc.LikedVideoIDsByUser(context.Background(), tt.userID, tt.videoIDs)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("expected err %v, got %v", tt.wantErr, err)
+			}
+			if repo.LikedVideoIDsCallCount != tt.wantCallCount {
+				t.Fatalf("expected repository called %d times, got %d", tt.wantCallCount, repo.LikedVideoIDsCallCount)
+			}
+			if err == nil && len(liked) != len(tt.mockLiked) {
+				t.Fatalf("expected %d liked entries, got %d", len(tt.mockLiked), len(liked))
 			}
 		})
 	}

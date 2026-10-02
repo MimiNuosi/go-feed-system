@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"go-feed-system/internal/feed"
 	"go-feed-system/internal/health"
 	"go-feed-system/internal/interaction"
 	"go-feed-system/internal/middleware"
@@ -22,6 +23,7 @@ type Dependencies struct {
 	FollowHandler          *interaction.FollowHandler
 	LikeHandler            *interaction.LikeHandler
 	CommentHandler         *interaction.CommentHandler
+	FeedHandler            *feed.Handler
 }
 
 // New 组装 HTTP 路由和中间件。
@@ -69,6 +71,9 @@ func New(deps Dependencies) *gin.Engine {
 		auth.DELETE("/videos/:id/like", deps.LikeHandler.Unlike)
 		auth.POST("/videos/:id/comments", deps.CommentHandler.Create)
 		auth.DELETE("/comments/:id", deps.CommentHandler.Delete)
+
+		// Feed 模块
+		auth.GET("/feed/following", deps.FeedHandler.ListFollowing)
 	}
 
 	return engine

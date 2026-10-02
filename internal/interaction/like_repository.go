@@ -32,6 +32,12 @@ type LikeRepository interface {
 	//
 	// 第一阶段不维护 videos.like_count 冗余字段。
 	CountByVideoID(ctx context.Context, videoID uint64) (int64, error)
+
+	// 批量查询：一次查出多个视频的点赞数
+	CountByVideoIDs(ctx context.Context, videoIDs []uint64) (map[uint64]int64, error)
+
+	// 批量查询：一次查出当前用户给哪些视频点过赞
+	LikedVideoIDsByUser(ctx context.Context, userID uint64, videoIDs []uint64) (map[uint64]bool, error)
 }
 
 type GORMLikeRepository struct {
@@ -95,4 +101,61 @@ func (r *GORMLikeRepository) CountByVideoID(ctx context.Context, videoID uint64)
 		return 0, fmt.Errorf("count likes by video: %w", err)
 	}
 	return count, nil
+}
+
+func (r *GORMLikeRepository) CountByVideoIDs(ctx context.Context, videoIDs []uint64) (map[uint64]int64, error) {
+	// 1. 防空切片：如果没有视频 ID，直接返回空 map，不访问数据库
+	if len(videoIDs) == 0 {
+		return make(map[uint64]int64), nil
+	}
+
+	// 2. 定义接收结果的结构体
+	type CountResult struct {
+		VideoID uint64
+		Count   int64
+	}
+	var results []CountResult
+
+	// 3. 核心 SQL：SELECT video_id, COUNT(*) as count FROM likes WHERE video_id IN (...) GROUP BY video_id
+	err := r.db.WithContext(ctx).
+		Model(&Like{}).
+		Select("video_id, COUNT(*) as count").
+		Where("video_id IN ?", videoIDs).
+		Group("video_id").
+		Scan(&results).Error
+	if err != nil {
+		return nil, fmt.Errorf("batch count likes: %w", err)
+	}
+
+	// 4. 转换格式：把切片变成 map，方便 Service 层 O(1) 查找
+	countMap := make(map[uint64]int64, len(results))
+	for _, r := range results {
+		countMap[r.VideoID] = r.Count
+	}
+	return countMap, nil
+}
+
+func (r *GORMLikeRepository) LikedVideoIDsByUser(ctx context.Context, userID uint64, videoIDs []uint64) (map[uint64]bool, error) {
+	// 1. 防空切片
+	if len(videoIDs) == 0 {
+		return make(map[uint64]bool), nil
+	}
+
+	// 2. 接收结果：只查 video_id 字段
+	var likedVideoIDs []uint64
+	// 核心 SQL：SELECT video_id FROM likes WHERE user_id = ? AND video_id IN (...)
+	err := r.db.WithContext(ctx).
+		Model(&Like{}).
+		Where("user_id = ? AND video_id IN ?", userID, videoIDs).
+		Pluck("video_id", &likedVideoIDs).Error
+	if err != nil {
+		return nil, fmt.Errorf("batch check liked status: %w", err)
+	}
+
+	// 3. 转换格式：变成 map[uint64]bool
+	likedMap := make(map[uint64]bool, len(likedVideoIDs))
+	for _, id := range likedVideoIDs {
+		likedMap[id] = true
+	}
+	return likedMap, nil
 }

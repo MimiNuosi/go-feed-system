@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"go-feed-system/internal/feed"
 	"go-feed-system/internal/health"
 	"go-feed-system/internal/interaction"
 	"go-feed-system/internal/middleware"
@@ -104,6 +105,10 @@ func run() error {
 
 	videoHandler := video.NewHandler(videoService, likeService)
 
+	feedRepository := feed.NewGORMRepository(db)
+	feedService := feed.NewService(feedRepository, userService, likeService)
+	feedHandler := feed.NewHandler(feedService, logger)
+
 	engine := router.New(router.Dependencies{
 		Logger:                 logger,
 		HealthHandler:          health.NewHandler(version),
@@ -114,6 +119,7 @@ func run() error {
 		FollowHandler:          followHandler,
 		LikeHandler:            likeHandler,
 		CommentHandler:         commentHandler,
+		FeedHandler:            feedHandler,
 	})
 
 	server := &http.Server{

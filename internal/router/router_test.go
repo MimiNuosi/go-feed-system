@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"go-feed-system/internal/feed"
 	"go-feed-system/internal/health"
 	"go-feed-system/internal/interaction"
 	"go-feed-system/internal/middleware"
@@ -106,6 +107,25 @@ func (f *fakeCommentRouteService) List(
 func (f *fakeCommentRouteService) Delete(ctx context.Context, userID, commentID uint64) error {
 	f.deleteCalls++
 	return nil
+}
+
+type fakeFeedService struct {
+	ListFollowingFunc func(ctx context.Context, userID uint64, cursor *feed.Cursor, pageSize int) (*feed.Page, error)
+	CallCount         int
+	LastUserID        uint64
+	LastCursor        *feed.Cursor
+	LastPageSize      int
+}
+
+func (f *fakeFeedService) ListFollowing(ctx context.Context, userID uint64, cursor *feed.Cursor, pageSize int) (*feed.Page, error) {
+	f.CallCount++
+	f.LastUserID = userID
+	f.LastCursor = cursor
+	f.LastPageSize = pageSize
+	if f.ListFollowingFunc != nil {
+		return f.ListFollowingFunc(ctx, userID, cursor, pageSize)
+	}
+	return &feed.Page{Items: []feed.Item{}, HasMore: false}, nil
 }
 
 func newTestEngine(
@@ -348,6 +368,72 @@ func TestCommentRoutes(t *testing.T) {
 		}
 		if commentService.deleteCalls != 1 {
 			t.Fatalf("expected Delete called once, got %d", commentService.deleteCalls)
+		}
+	})
+}
+
+func TestRouter_FeedFollowing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	fakeFeedSvc := &fakeFeedService{
+		ListFollowingFunc: func(ctx context.Context, userID uint64, cursor *feed.Cursor, pageSize int) (*feed.Page, error) {
+			return &feed.Page{
+				Items:      []feed.Item{{ID: 1, Title: "test video"}},
+				NextCursor: "cursor-123",
+				HasMore:    true,
+			}, nil
+		},
+	}
+	feedHandler := feed.NewHandler(fakeFeedSvc, logger)
+
+	t.Run("未登录访问 Feed 返回 401", func(t *testing.T) {
+		engine := New(Dependencies{
+			Logger:                 logger,
+			HealthHandler:          health.NewHandler("test"),
+			AuthMiddleware:         middleware.Auth(nil, logger),
+			OptionalAuthMiddleware: middleware.OptionalAuth(nil, logger),
+			FeedHandler:            feedHandler,
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/feed/following", nil)
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("expected 401, got %d", w.Code)
+		}
+	})
+
+	t.Run("登录后请求能到达 Handler 并返回 200", func(t *testing.T) {
+		authMiddleware := func(c *gin.Context) {
+			ctx := authctx.WithUserID(c.Request.Context(), 1)
+			c.Request = c.Request.WithContext(ctx)
+			c.Next()
+		}
+		engine := New(Dependencies{
+			Logger:                 logger,
+			HealthHandler:          health.NewHandler("test"),
+			AuthMiddleware:         authMiddleware,
+			OptionalAuthMiddleware: func(c *gin.Context) { c.Next() },
+			FeedHandler:            feedHandler,
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/feed/following?page_size=10", nil)
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d. body=%s", w.Code, w.Body.String())
+		}
+		if fakeFeedSvc.CallCount != 1 {
+			t.Fatalf("expected FeedService called once, got %d", fakeFeedSvc.CallCount)
+		}
+		if fakeFeedSvc.LastUserID != 1 {
+			t.Errorf("expected userID 1, got %d", fakeFeedSvc.LastUserID)
+		}
+		if fakeFeedSvc.LastPageSize != 10 {
+			t.Errorf("expected pageSize 10, got %d", fakeFeedSvc.LastPageSize)
 		}
 	})
 }

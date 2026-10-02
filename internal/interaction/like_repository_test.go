@@ -180,3 +180,83 @@ func TestGORMLikeRepository(t *testing.T) {
 		}
 	})
 }
+
+func TestGORMLikeRepositoryBatchQueries(t *testing.T) {
+	tx := openTestDB(t)
+	repo := NewGORMLikeRepository(tx)
+
+	userID1, videoID1 := createSeedData(t, tx)
+
+	user2 := &user.User{
+		Username:     "batch_user_2",
+		Email:        "batch_user_2@example.com",
+		PasswordHash: "hash",
+	}
+	if err := tx.Create(user2).Error; err != nil {
+		t.Fatalf("create second user: %v", err)
+	}
+	video2 := &video.Video{
+		AuthorID:         userID1,
+		Title:            "Batch Video 2",
+		Description:      "desc",
+		StorageKey:       "test/batch/video2",
+		OriginalFilename: "video2.mp4",
+		ContentType:      "video/mp4",
+		SizeBytes:        100,
+		Status:           "ready",
+	}
+	if err := tx.Create(video2).Error; err != nil {
+		t.Fatalf("create second video: %v", err)
+	}
+
+	for _, pair := range [][2]uint64{
+		{userID1, videoID1},
+		{user2.ID, videoID1},
+		{userID1, video2.ID},
+	} {
+		if err := repo.Create(context.Background(), pair[0], pair[1]); err != nil {
+			t.Fatalf("create seed like: %v", err)
+		}
+	}
+
+	counts, err := repo.CountByVideoIDs(
+		context.Background(),
+		[]uint64{videoID1, video2.ID, 999999},
+	)
+	if err != nil {
+		t.Fatalf("batch count likes: %v", err)
+	}
+	if counts[videoID1] != 2 || counts[video2.ID] != 1 {
+		t.Fatalf("unexpected counts: %+v", counts)
+	}
+	if _, ok := counts[999999]; ok {
+		t.Fatalf("missing video should not have a count entry: %+v", counts)
+	}
+
+	liked, err := repo.LikedVideoIDsByUser(
+		context.Background(),
+		userID1,
+		[]uint64{videoID1, video2.ID, 999999},
+	)
+	if err != nil {
+		t.Fatalf("batch liked status: %v", err)
+	}
+	if !liked[videoID1] || !liked[video2.ID] {
+		t.Fatalf("expected both videos liked by user1: %+v", liked)
+	}
+	if liked[999999] {
+		t.Fatalf("missing video must not be marked liked")
+	}
+
+	t.Run("空 ID 切片不访问数据库", func(t *testing.T) {
+		counts, err := repo.CountByVideoIDs(context.Background(), nil)
+		if err != nil || len(counts) != 0 {
+			t.Fatalf("expected empty counts, got counts=%v err=%v", counts, err)
+		}
+
+		liked, err := repo.LikedVideoIDsByUser(context.Background(), userID1, nil)
+		if err != nil || len(liked) != 0 {
+			t.Fatalf("expected empty liked map, got liked=%v err=%v", liked, err)
+		}
+	})
+}

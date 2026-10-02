@@ -136,3 +136,35 @@ func (s *LikeService) GetLikeState(ctx context.Context, viewerID, videoID uint64
 	}
 	return state.Count, state.IsLikedBy, nil
 }
+
+// CountByVideoIDs 批量获取视频点赞数。
+// 用于 Feed 流组装，避免逐条查询产生 N+1 问题。
+func (s *LikeService) CountByVideoIDs(ctx context.Context, videoIDs []uint64) (map[uint64]int64, error) {
+	// Service 层依然要做空切片校验，防御性编程
+	if len(videoIDs) == 0 {
+		return make(map[uint64]int64), nil
+	}
+
+	countMap, err := s.likes.CountByVideoIDs(ctx, videoIDs)
+	if err != nil {
+		return nil, fmt.Errorf("like service: batch count by video ids: %w", err)
+	}
+	return countMap, nil
+}
+
+// LikedVideoIDsByUser 批量获取当前用户对多个视频的点赞状态。
+// 用于 Feed 流组装。
+func (s *LikeService) LikedVideoIDsByUser(ctx context.Context, userID uint64, videoIDs []uint64) (map[uint64]bool, error) {
+	if userID == 0 {
+		return nil, ErrInvalidInput
+	}
+	if len(videoIDs) == 0 {
+		return make(map[uint64]bool), nil
+	}
+
+	likedMap, err := s.likes.LikedVideoIDsByUser(ctx, userID, videoIDs)
+	if err != nil {
+		return nil, fmt.Errorf("like service: batch check liked status: %w", err)
+	}
+	return likedMap, nil
+}
