@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,6 +27,7 @@ type Config struct {
 	MySQL   MySQLConfig
 	Auth    AuthConfig
 	Storage StorageConfig
+	Redis   RedisConfig
 }
 
 type HTTPConfig struct {
@@ -49,6 +51,12 @@ type AuthConfig struct {
 
 type StorageConfig struct {
 	LocalDir string
+}
+
+type RedisConfig struct {
+	Addr     string
+	Password string
+	DB       int
 }
 
 // Load 从环境变量和默认值构造配置。
@@ -75,6 +83,11 @@ func Load() (Config, error) {
 		},
 		Storage: StorageConfig{
 			LocalDir: envOrDefault("LOCAL_STORAGE_DIR", defaultLocalStorageDir),
+		},
+		Redis: RedisConfig{
+			Addr:     envOrDefault("REDIS_ADDR", "127.0.0.1:6379"),
+			Password: os.Getenv("REDIS_PASSWORD"),
+			DB:       envOrDefaultInt("REDIS_DB", 0), // 注意：需要新增一个 int 类型的解析函数
 		},
 	}
 
@@ -119,6 +132,12 @@ func (c Config) validate() error {
 	if strings.TrimSpace(c.Storage.LocalDir) == "" {
 		return fmt.Errorf("local storage dir must not be empty")
 	}
+	if strings.TrimSpace(c.Redis.Addr) == "" {
+		return fmt.Errorf("REDIS_ADDR must not be empty")
+	}
+	if c.Redis.DB < 0 {
+		return fmt.Errorf("REDIS_DB must not be negative")
+	}
 
 	return nil
 }
@@ -130,4 +149,16 @@ func envOrDefault(key, fallback string) string {
 	}
 
 	return value
+}
+
+func envOrDefaultInt(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

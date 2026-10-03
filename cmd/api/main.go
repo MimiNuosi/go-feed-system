@@ -20,6 +20,7 @@ import (
 	"go-feed-system/pkg/config"
 	"go-feed-system/pkg/database"
 	"go-feed-system/pkg/password"
+	"go-feed-system/pkg/redis"
 	"go-feed-system/pkg/storage/local"
 	"go-feed-system/pkg/token"
 
@@ -62,6 +63,16 @@ func run() error {
 	defer func() {
 		if err := database.Close(db); err != nil {
 			logger.Error("close database", "error", err)
+		}
+	}()
+
+	redisClient, err := redis.Open(startupCtx, cfg.Redis)
+	if err != nil {
+		return fmt.Errorf("open redis: %w", err)
+	}
+	defer func() {
+		if err := redis.Close(redisClient); err != nil {
+			logger.Error("close redis", "error", err)
 		}
 	}()
 

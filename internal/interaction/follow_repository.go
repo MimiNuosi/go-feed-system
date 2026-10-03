@@ -14,6 +14,7 @@ type FollowRepository interface {
 	Exists(ctx context.Context, followerID, followeeID uint64) (bool, error)
 	CountFollowers(ctx context.Context, userID uint64) (int64, error)
 	CountFollowing(ctx context.Context, userID uint64) (int64, error)
+	ListFollowerIDs(ctx context.Context, followeeID uint64, afterID uint64, limit int) ([]uint64, error)
 }
 
 type GORMFollowRepository struct {
@@ -87,4 +88,34 @@ func (r *GORMFollowRepository) CountFollowing(ctx context.Context, userID uint64
 		return 0, fmt.Errorf("count following: %w", err)
 	}
 	return count, nil
+}
+
+func (r *GORMFollowRepository) ListFollowerIDs(ctx context.Context, followeeID uint64, afterID uint64, limit int) ([]uint64, error) {
+	// 1. 防空参数
+	if limit <= 0 {
+		return []uint64{}, nil
+	}
+
+	var followerIDs []uint64
+
+	// 2. 构建查询
+	query := r.db.WithContext(ctx).
+		Model(&Follow{}).
+		Where("followee_id = ?", followeeID)
+
+	// 3. 游标分页：如果 afterID > 0，说明不是第一页
+	if afterID > 0 {
+		query = query.Where("follower_id > ?", afterID)
+	}
+
+	// 4. 排序与限制，只取 follower_id 这一列
+	err := query.
+		Order("follower_id ASC").
+		Limit(limit).
+		Pluck("follower_id", &followerIDs).Error
+	if err != nil {
+		return nil, fmt.Errorf("list follower ids: %w", err)
+	}
+
+	return followerIDs, nil
 }

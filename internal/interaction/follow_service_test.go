@@ -59,6 +59,15 @@ func (f *fakeFollowRepository) CountFollowers(ctx context.Context, userID uint64
 func (f *fakeFollowRepository) CountFollowing(ctx context.Context, userID uint64) (int64, error) {
 	return 0, nil
 }
+func (f *fakeFollowRepository) ListFollowerIDs(
+	ctx context.Context,
+	followeeID uint64,
+	afterID uint64,
+	limit int,
+) ([]uint64, error) {
+	// 如果你的 Service 测试不需要用到粉丝列表，直接返回空切片即可
+	return []uint64{}, nil
+}
 
 // 3. 表驱动测试
 func TestFollowService_Follow(t *testing.T) {
