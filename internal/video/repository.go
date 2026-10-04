@@ -2,35 +2,77 @@ package video
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
 	"gorm.io/gorm"
+
+	"go-feed-system/internal/outbox"
 )
 
 type Repository interface {
 	Create(ctx context.Context, video *Video) error
+	CreateWithOutbox(ctx context.Context, video *Video, event *outbox.Event) error
 	FindByID(ctx context.Context, id uint64) (*Video, error)
 }
 
 type GORMRepository struct {
-	db *gorm.DB
+	db           *gorm.DB
+	outboxWriter outbox.Writer
 }
 
-func NewGORMRepository(db *gorm.DB) *GORMRepository {
+func NewGORMRepository(db *gorm.DB, outboxWriter outbox.Writer) *GORMRepository {
 	return &GORMRepository{
-		db: db,
+		db:           db,
+		outboxWriter: outboxWriter,
 	}
 }
 
 func (r *GORMRepository) Create(ctx context.Context, video *Video) error {
-	// TODO(阶段 3.1)：使用 GORM 插入视频元数据。
-	//
-	// 要求：
-	// 1. 使用 r.db.WithContext(ctx)。
-	// 2. storage_key 唯一冲突时返回业务可识别的错误。
-	// 3. 其他错误使用 fmt.Errorf("create video: %w", err) 包装。
-	if err := r.db.WithContext(ctx).Create(video).Error; err != nil {
+	return r.createWithTx(ctx, r.db, video)
+}
+
+func (r *GORMRepository) CreateWithOutbox(
+	ctx context.Context,
+	video *Video,
+	event *outbox.Event,
+) error {
+	if video == nil || event == nil {
+		return fmt.Errorf("invalid video or outbox event: %w", ErrInvalidInput)
+	}
+	if r.outboxWriter == nil {
+		return errors.New("outbox writer is nil")
+	}
+
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := r.createWithTx(ctx, tx, video); err != nil {
+			return fmt.Errorf("create video in transaction: %w", err)
+		}
+
+		event.AggregateID = video.ID
+
+		payload := outbox.VideoPublishedPayload{
+			VideoID:     video.ID,
+			AuthorID:    video.AuthorID,
+			PublishedAt: video.CreatedAt,
+		}
+		payloadBytes, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("marshal video published event: %w", err)
+		}
+		event.Payload = payloadBytes
+
+		if err := r.outboxWriter.CreateWithTx(ctx, tx, event); err != nil {
+			return fmt.Errorf("create outbox event in transaction: %w", err)
+		}
+
+		return nil
+	})
+}
+
+func (r *GORMRepository) createWithTx(ctx context.Context, tx *gorm.DB, video *Video) error {
+	if err := tx.WithContext(ctx).Create(video).Error; err != nil {
 		if errors.Is(err, gorm.ErrDuplicatedKey) {
 			return ErrConflict
 		}

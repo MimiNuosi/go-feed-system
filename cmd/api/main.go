@@ -14,6 +14,7 @@ import (
 	"go-feed-system/internal/health"
 	"go-feed-system/internal/interaction"
 	"go-feed-system/internal/middleware"
+	"go-feed-system/internal/outbox"
 	"go-feed-system/internal/router"
 	"go-feed-system/internal/user"
 	"go-feed-system/internal/video"
@@ -99,7 +100,8 @@ func run() error {
 		return fmt.Errorf("create video storage: %w", err)
 	}
 
-	videoRepository := video.NewGORMRepository(db)
+	outboxRepository := outbox.NewGORMRepository(db)
+	videoRepository := video.NewGORMRepository(db, outboxRepository)
 	videoService := video.NewService(videoRepository, videoStorage, userService, logger)
 
 	followRepository := interaction.NewGORMFollowRepository(db)

@@ -7,7 +7,11 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
+
+	"go-feed-system/internal/outbox"
 	"go-feed-system/internal/user"
 	"go-feed-system/pkg/storage"
 )
@@ -188,6 +192,54 @@ func TestService_Upload(t *testing.T) {
 				t.Errorf("expected Delete to be called %d times, got %d", tt.wantDeleteCount, storageMock.DeleteCount)
 			}
 		})
+	}
+}
+
+func TestService_Upload_BuildsOutboxEvent(t *testing.T) {
+	var capturedVideo *Video
+	var capturedEvent *outbox.Event
+
+	repo := &fakeVideoRepository{
+		CreateWithOutboxFunc: func(ctx context.Context, video *Video, event *outbox.Event) error {
+			capturedVideo = video
+			capturedEvent = event
+			video.ID = 1001
+			return nil
+		},
+	}
+	storageMock := &fakeObjectStorage{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc := NewService(repo, storageMock, &fakeUserReader{}, logger)
+
+	_, err := svc.Upload(context.Background(), UploadInput{
+		AuthorID:         1,
+		Title:            "测试视频",
+		OriginalFilename: "test.mp4",
+		ContentType:      "video/mp4",
+		SizeBytes:        1024,
+		Content:          strings.NewReader("fake video"),
+	})
+	if err != nil {
+		t.Fatalf("upload video: %v", err)
+	}
+
+	if capturedVideo == nil || capturedEvent == nil {
+		t.Fatal("expected repository to receive video and outbox event")
+	}
+	if _, err := uuid.Parse(capturedEvent.EventID); err != nil {
+		t.Errorf("expected valid event ID, got %q: %v", capturedEvent.EventID, err)
+	}
+	if capturedEvent.EventType != outbox.EventTypeVideoPublished {
+		t.Errorf("expected event type %q, got %q", outbox.EventTypeVideoPublished, capturedEvent.EventType)
+	}
+	if capturedEvent.Status != outbox.StatusPending {
+		t.Errorf("expected status %q, got %q", outbox.StatusPending, capturedEvent.Status)
+	}
+	if capturedVideo.CreatedAt.IsZero() {
+		t.Error("expected video CreatedAt to be set before entering repository")
+	}
+	if capturedVideo.CreatedAt.Nanosecond()%int(time.Millisecond) != 0 {
+		t.Errorf("expected millisecond precision CreatedAt, got %v", capturedVideo.CreatedAt)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 
+	"go-feed-system/internal/outbox"
 	"go-feed-system/internal/user"
 )
 
@@ -40,11 +41,22 @@ func (f *fakeVideoService) OpenFile(ctx context.Context, id uint64) (io.ReadSeek
 }
 
 type fakeVideoRepository struct {
-	CreateFunc   func(ctx context.Context, video *Video) error
-	FindByIDFunc func(ctx context.Context, id uint64) (*Video, error)
+	CreateFunc           func(ctx context.Context, video *Video) error
+	CreateWithOutboxFunc func(ctx context.Context, video *Video, event *outbox.Event) error
+	FindByIDFunc         func(ctx context.Context, id uint64) (*Video, error)
 }
 
 func (f *fakeVideoRepository) Create(ctx context.Context, video *Video) error {
+	if f.CreateFunc != nil {
+		return f.CreateFunc(ctx, video)
+	}
+	return nil
+}
+
+func (f *fakeVideoRepository) CreateWithOutbox(ctx context.Context, video *Video, event *outbox.Event) error {
+	if f.CreateWithOutboxFunc != nil {
+		return f.CreateWithOutboxFunc(ctx, video, event)
+	}
 	if f.CreateFunc != nil {
 		return f.CreateFunc(ctx, video)
 	}

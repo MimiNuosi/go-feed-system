@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"go-feed-system/internal/outbox"
 	"go-feed-system/internal/user"
 	"go-feed-system/pkg/storage"
 
@@ -113,6 +114,11 @@ func (s *Service) Upload(ctx context.Context, input UploadInput) (*Video, error)
 	}
 	storageKey := fmt.Sprintf("videos/%s/%s%s", time.Now().Format("2006/01"), id.String(), ext)
 
+	eventID, err := uuid.NewRandom()
+	if err != nil {
+		return nil, fmt.Errorf("generate outbox event id: %w", err)
+	}
+
 	// 3. 先保存文件
 	err = s.storage.Save(ctx, storageKey, input.Content, input.SizeBytes, input.ContentType)
 	if err != nil {
@@ -129,9 +135,16 @@ func (s *Service) Upload(ctx context.Context, input UploadInput) (*Video, error)
 		ContentType:      input.ContentType,
 		SizeBytes:        input.SizeBytes,
 		Status:           StatusReady, // 如果是异步转码，这里可能就是 "pending"
+		CreatedAt:        time.Now().UTC().Truncate(time.Millisecond),
 	}
 
-	err = s.videos.Create(ctx, video)
+	event := &outbox.Event{
+		EventID:   eventID.String(),
+		EventType: outbox.EventTypeVideoPublished,
+		Status:    outbox.StatusPending,
+	}
+
+	err = s.videos.CreateWithOutbox(ctx, video, event)
 	if err != nil {
 		// 5. 数据库写入失败，进行补偿：删除已经保存的文件
 		// 创建独立的、带超时的 context，专门用于补偿清理
@@ -146,7 +159,7 @@ func (s *Service) Upload(ctx context.Context, input UploadInput) (*Video, error)
 		if errors.Is(err, ErrConflict) {
 			return nil, ErrConflict
 		}
-		return nil, fmt.Errorf("upload video: create metadata: %w", err)
+		return nil, fmt.Errorf("upload video: create video with outbox: %w", err)
 	}
 
 	// 6. 成功返回
