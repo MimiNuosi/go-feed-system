@@ -19,17 +19,25 @@ const (
 	defaultMySQLConnLifetime = 30 * time.Minute
 	defaultLocalStorageDir   = "./data/videos"
 	defaultOutboxPublish     = time.Second
+
+	defaultRabbitMQExchange     = "feed.events"
+	defaultRabbitMQExchangeType = "topic"
+	defaultRabbitMQRoutingKey   = "video.published"
+	defaultRabbitMQQueue        = "feed.fanout.video.published"
+	defaultRabbitMQDLX          = "feed.dlx"
+	defaultRabbitMQDLQ          = "feed.fanout.video.published.dlq"
 )
 
 // Config 保存应用启动时需要的全部配置。
 // 依赖从 main 显式传给各个组件，不通过全局变量获取。
 type Config struct {
-	HTTP    HTTPConfig
-	MySQL   MySQLConfig
-	Auth    AuthConfig
-	Storage StorageConfig
-	Redis   RedisConfig
-	Outbox  OutboxConfig
+	HTTP     HTTPConfig
+	MySQL    MySQLConfig
+	Auth     AuthConfig
+	Storage  StorageConfig
+	Redis    RedisConfig
+	Outbox   OutboxConfig
+	RabbitMQ RabbitMQConfig
 }
 
 type HTTPConfig struct {
@@ -63,6 +71,16 @@ type RedisConfig struct {
 
 type OutboxConfig struct {
 	PublishInterval time.Duration
+}
+
+type RabbitMQConfig struct {
+	URL          string
+	Exchange     string
+	ExchangeType string
+	RoutingKey   string
+	Queue        string
+	DLX          string
+	DLQ          string
 }
 
 // Load 从环境变量和默认值构造配置。
@@ -105,6 +123,15 @@ func Load() (Config, error) {
 		},
 		Outbox: OutboxConfig{
 			PublishInterval: outboxPublishInterval,
+		},
+		RabbitMQ: RabbitMQConfig{
+			URL:          strings.TrimSpace(os.Getenv("RABBITMQ_URL")),
+			Exchange:     envOrDefault("RABBITMQ_EXCHANGE", defaultRabbitMQExchange),
+			ExchangeType: envOrDefault("RABBITMQ_EXCHANGE_TYPE", defaultRabbitMQExchangeType),
+			RoutingKey:   envOrDefault("RABBITMQ_ROUTING_KEY", defaultRabbitMQRoutingKey),
+			Queue:        envOrDefault("RABBITMQ_QUEUE", defaultRabbitMQQueue),
+			DLX:          envOrDefault("RABBITMQ_DLX", defaultRabbitMQDLX),
+			DLQ:          envOrDefault("RABBITMQ_DLQ", defaultRabbitMQDLQ),
 		},
 	}
 
@@ -157,6 +184,27 @@ func (c Config) validate() error {
 	}
 	if c.Outbox.PublishInterval <= 0 {
 		return fmt.Errorf("OUTBOX_PUBLISH_INTERVAL must be positive")
+	}
+	if strings.TrimSpace(c.RabbitMQ.URL) == "" {
+		return fmt.Errorf("RABBITMQ_URL must not be empty")
+	}
+	if strings.TrimSpace(c.RabbitMQ.Exchange) == "" {
+		return fmt.Errorf("RABBITMQ_EXCHANGE must not be empty")
+	}
+	if strings.TrimSpace(c.RabbitMQ.ExchangeType) == "" {
+		return fmt.Errorf("RABBITMQ_EXCHANGE_TYPE must not be empty")
+	}
+	if strings.TrimSpace(c.RabbitMQ.RoutingKey) == "" {
+		return fmt.Errorf("RABBITMQ_ROUTING_KEY must not be empty")
+	}
+	if strings.TrimSpace(c.RabbitMQ.Queue) == "" {
+		return fmt.Errorf("RABBITMQ_QUEUE must not be empty")
+	}
+	if strings.TrimSpace(c.RabbitMQ.DLX) == "" {
+		return fmt.Errorf("RABBITMQ_DLX must not be empty")
+	}
+	if strings.TrimSpace(c.RabbitMQ.DLQ) == "" {
+		return fmt.Errorf("RABBITMQ_DLQ must not be empty")
 	}
 
 	return nil

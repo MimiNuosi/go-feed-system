@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -51,5 +52,53 @@ func TestDurationFromEnv(t *testing.T) {
 				t.Errorf("expected %v, got %v", tt.want, got)
 			}
 		})
+	}
+}
+
+func TestLoadRabbitMQConfig(t *testing.T) {
+	t.Setenv("MYSQL_DSN", "user:pass@tcp(127.0.0.1:3306)/test")
+	t.Setenv("JWT_SECRET", strings.Repeat("x", 32))
+	t.Setenv("RABBITMQ_URL", "amqp://feed_app:secret@127.0.0.1:5672/")
+	t.Setenv("RABBITMQ_EXCHANGE", "")
+	t.Setenv("RABBITMQ_EXCHANGE_TYPE", "")
+	t.Setenv("RABBITMQ_ROUTING_KEY", "")
+	t.Setenv("RABBITMQ_QUEUE", "")
+	t.Setenv("RABBITMQ_DLX", "")
+	t.Setenv("RABBITMQ_DLQ", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.RabbitMQ.URL != "amqp://feed_app:secret@127.0.0.1:5672/" {
+		t.Errorf("unexpected RabbitMQ URL: %q", cfg.RabbitMQ.URL)
+	}
+	if cfg.RabbitMQ.Exchange != defaultRabbitMQExchange {
+		t.Errorf("expected exchange %q, got %q", defaultRabbitMQExchange, cfg.RabbitMQ.Exchange)
+	}
+	if cfg.RabbitMQ.ExchangeType != defaultRabbitMQExchangeType {
+		t.Errorf("expected exchange type %q, got %q", defaultRabbitMQExchangeType, cfg.RabbitMQ.ExchangeType)
+	}
+	if cfg.RabbitMQ.RoutingKey != defaultRabbitMQRoutingKey {
+		t.Errorf("expected routing key %q, got %q", defaultRabbitMQRoutingKey, cfg.RabbitMQ.RoutingKey)
+	}
+	if cfg.RabbitMQ.Queue != defaultRabbitMQQueue {
+		t.Errorf("expected queue %q, got %q", defaultRabbitMQQueue, cfg.RabbitMQ.Queue)
+	}
+	if cfg.RabbitMQ.DLX != defaultRabbitMQDLX {
+		t.Errorf("expected DLX %q, got %q", defaultRabbitMQDLX, cfg.RabbitMQ.DLX)
+	}
+	if cfg.RabbitMQ.DLQ != defaultRabbitMQDLQ {
+		t.Errorf("expected DLQ %q, got %q", defaultRabbitMQDLQ, cfg.RabbitMQ.DLQ)
+	}
+}
+
+func TestLoadRequiresRabbitMQURL(t *testing.T) {
+	t.Setenv("MYSQL_DSN", "user:pass@tcp(127.0.0.1:3306)/test")
+	t.Setenv("JWT_SECRET", strings.Repeat("x", 32))
+	t.Setenv("RABBITMQ_URL", "")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected missing RABBITMQ_URL to fail validation")
 	}
 }
