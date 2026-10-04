@@ -18,6 +18,7 @@ const (
 	defaultMySQLMaxIdleConns = 5
 	defaultMySQLConnLifetime = 30 * time.Minute
 	defaultLocalStorageDir   = "./data/videos"
+	defaultOutboxPublish     = time.Second
 )
 
 // Config 保存应用启动时需要的全部配置。
@@ -28,6 +29,7 @@ type Config struct {
 	Auth    AuthConfig
 	Storage StorageConfig
 	Redis   RedisConfig
+	Outbox  OutboxConfig
 }
 
 type HTTPConfig struct {
@@ -59,11 +61,23 @@ type RedisConfig struct {
 	DB       int
 }
 
+type OutboxConfig struct {
+	PublishInterval time.Duration
+}
+
 // Load 从环境变量和默认值构造配置。
 //
 // 当前只支持少量环境变量，后续增加 MySQL、Redis、RabbitMQ 时，
 // 继续在这里集中解析，不要把 os.Getenv 散落到业务代码中。
 func Load() (Config, error) {
+	outboxPublishInterval, err := durationFromEnv(
+		"OUTBOX_PUBLISH_INTERVAL",
+		defaultOutboxPublish,
+	)
+	if err != nil {
+		return Config{}, fmt.Errorf("load config: %w", err)
+	}
+
 	cfg := Config{
 		HTTP: HTTPConfig{
 			Addr:              envOrDefault("HTTP_ADDR", defaultHTTPAddr),
@@ -88,6 +102,9 @@ func Load() (Config, error) {
 			Addr:     envOrDefault("REDIS_ADDR", "127.0.0.1:6379"),
 			Password: os.Getenv("REDIS_PASSWORD"),
 			DB:       envOrDefaultInt("REDIS_DB", 0), // 注意：需要新增一个 int 类型的解析函数
+		},
+		Outbox: OutboxConfig{
+			PublishInterval: outboxPublishInterval,
 		},
 	}
 
@@ -138,6 +155,9 @@ func (c Config) validate() error {
 	if c.Redis.DB < 0 {
 		return fmt.Errorf("REDIS_DB must not be negative")
 	}
+	if c.Outbox.PublishInterval <= 0 {
+		return fmt.Errorf("OUTBOX_PUBLISH_INTERVAL must be positive")
+	}
 
 	return nil
 }
@@ -161,4 +181,18 @@ func envOrDefaultInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func durationFromEnv(key string, fallback time.Duration) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a valid duration: %w", key, err)
+	}
+
+	return parsed, nil
 }
