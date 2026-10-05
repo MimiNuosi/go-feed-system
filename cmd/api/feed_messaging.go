@@ -7,7 +7,6 @@ import (
 	"log/slog"
 
 	amqp "github.com/rabbitmq/amqp091-go"
-	"github.com/redis/go-redis/v9"
 
 	"go-feed-system/internal/feed"
 	"go-feed-system/internal/outbox"
@@ -36,7 +35,7 @@ func newFeedMessaging(
 	ctx context.Context,
 	cfg config.Config,
 	repository *outbox.GORMRepository,
-	redisClient *redis.Client,
+	inbox feed.Inbox,
 	followers feed.FollowerReader,
 	logger *slog.Logger,
 ) (*feedMessaging, error) {
@@ -70,7 +69,6 @@ func newFeedMessaging(
 	}
 
 	// 4. 组装 Feed 消费链路。
-	inbox := feed.NewRedisInbox(redisClient, feed.DefaultInboxMaxLen)
 	fanoutService := feed.NewFanoutService(followers, inbox)
 	consumer := feed.NewRabbitConsumer(
 		consumerChannel,

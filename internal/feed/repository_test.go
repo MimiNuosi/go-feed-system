@@ -170,3 +170,40 @@ func TestGORMRepository_ListFollowing(t *testing.T) {
 		}
 	})
 }
+
+func TestGORMRepository_ListVisibleByIDs(t *testing.T) {
+	t.Run("只返回当前仍关注的作者视频", func(t *testing.T) {
+		tx := openTestDB(t)
+		repo := NewGORMRepository(tx)
+
+		userA, _, _, _, videoB, videoC := createFeedSeedData(t, tx)
+
+		records, err := repo.ListVisibleByIDs(
+			context.Background(),
+			userA,
+			[]uint64{videoB, videoC},
+		)
+		if err != nil {
+			t.Fatalf("list visible videos: %v", err)
+		}
+		if len(records) != 1 {
+			t.Fatalf("expected one visible video, got %d", len(records))
+		}
+		if records[0].ID != videoB {
+			t.Errorf("expected video %d, got %d", videoB, records[0].ID)
+		}
+	})
+
+	t.Run("空 ID 切片直接返回空结果", func(t *testing.T) {
+		tx := openTestDB(t)
+		repo := NewGORMRepository(tx)
+
+		records, err := repo.ListVisibleByIDs(context.Background(), 1, nil)
+		if err != nil {
+			t.Fatalf("list visible videos: %v", err)
+		}
+		if len(records) != 0 {
+			t.Fatalf("expected empty records, got %v", records)
+		}
+	})
+}

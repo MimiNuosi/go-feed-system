@@ -16,6 +16,7 @@ type Repository interface {
 	//
 	// 使用 (created_at, id) 复合排序，limit 由 Service 传入 pageSize+1。
 	ListFollowing(ctx context.Context, followerID uint64, cursor *Cursor, limit int) ([]VideoRecord, error)
+	ListVisibleByIDs(ctx context.Context, followerID uint64, videoIDs []uint64) ([]VideoRecord, error)
 }
 
 type GORMRepository struct {
@@ -56,5 +57,28 @@ func (r *GORMRepository) ListFollowing(
 		return nil, fmt.Errorf("list following feed: %w", err)
 	}
 
+	return records, nil
+}
+
+func (r *GORMRepository) ListVisibleByIDs(
+	ctx context.Context,
+	followerID uint64,
+	videoIDs []uint64,
+) ([]VideoRecord, error) {
+	if len(videoIDs) == 0 {
+		return []VideoRecord{}, nil
+	}
+
+	var records []VideoRecord
+	err := r.db.WithContext(ctx).
+		Table("videos AS v").
+		Select("v.id, v.author_id, v.title, v.description, v.content_type, v.created_at").
+		Joins("JOIN follows AS f ON f.followee_id = v.author_id").
+		Where("f.follower_id = ?", followerID).
+		Where("v.id IN ?", videoIDs).
+		Find(&records).Error
+	if err != nil {
+		return nil, fmt.Errorf("list videos by ids: %w", err)
+	}
 	return records, nil
 }

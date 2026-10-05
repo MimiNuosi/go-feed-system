@@ -3,6 +3,8 @@ package feed
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -13,11 +15,15 @@ var errDBError = errors.New("database connection lost")
 
 // 1. Fake Repository
 type fakeFeedRepository struct {
-	ListFollowingFunc func(ctx context.Context, followerID uint64, cursor *Cursor, limit int) ([]VideoRecord, error)
-	CallCount         int
-	LastFollowerID    uint64
-	LastCursor        *Cursor
-	LastLimit         int
+	ListFollowingFunc     func(ctx context.Context, followerID uint64, cursor *Cursor, limit int) ([]VideoRecord, error)
+	ListVisibleByIDsFunc  func(ctx context.Context, followerID uint64, videoIDs []uint64) ([]VideoRecord, error)
+	CallCount             int
+	ListVisibleCallCount  int
+	LastFollowerID        uint64
+	LastCursor            *Cursor
+	LastLimit             int
+	LastVisibleFollowerID uint64
+	LastVideoIDs          []uint64
 }
 
 func (f *fakeFeedRepository) ListFollowing(ctx context.Context, followerID uint64, cursor *Cursor, limit int) ([]VideoRecord, error) {
@@ -27,6 +33,16 @@ func (f *fakeFeedRepository) ListFollowing(ctx context.Context, followerID uint6
 	f.LastLimit = limit
 	if f.ListFollowingFunc != nil {
 		return f.ListFollowingFunc(ctx, followerID, cursor, limit)
+	}
+	return nil, nil
+}
+
+func (f *fakeFeedRepository) ListVisibleByIDs(ctx context.Context, followerID uint64, videoIDs []uint64) ([]VideoRecord, error) {
+	f.ListVisibleCallCount++
+	f.LastVisibleFollowerID = followerID
+	f.LastVideoIDs = videoIDs
+	if f.ListVisibleByIDsFunc != nil {
+		return f.ListVisibleByIDsFunc(ctx, followerID, videoIDs)
 	}
 	return nil, nil
 }
@@ -75,6 +91,19 @@ func (f *fakeFeedLikeReader) LikedVideoIDsByUser(ctx context.Context, userID uin
 		return f.LikedVideoIDsByUserFunc(ctx, userID, videoIDs)
 	}
 	return make(map[uint64]bool), nil
+}
+
+type fakeFeedInboxReader struct {
+	ListFunc  func(ctx context.Context, userID uint64, cursor uint64, limit int) ([]uint64, error)
+	CallCount int
+}
+
+func (f *fakeFeedInboxReader) List(ctx context.Context, userID uint64, cursor uint64, limit int) ([]uint64, error) {
+	f.CallCount++
+	if f.ListFunc != nil {
+		return f.ListFunc(ctx, userID, cursor, limit)
+	}
+	return nil, nil
 }
 
 // 4. 表驱动测试
@@ -263,7 +292,8 @@ func TestService_ListFollowing(t *testing.T) {
 				},
 			}
 
-			svc := NewService(videoRepo, userReader, likeReader)
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			svc := NewService(videoRepo, userReader, likeReader, nil, logger)
 			page, err := svc.ListFollowing(context.Background(), tt.userID, tt.cursor, tt.pageSize)
 
 			// 1. 断言错误
@@ -317,6 +347,153 @@ func TestService_ListFollowing(t *testing.T) {
 			// 验证传给 LikeReader 的 userID 是否正确
 			if tt.wantLikedCall > 0 && likeReader.LastLikedUserID != tt.userID {
 				t.Errorf("expected LikeReader userID %d, got %d", tt.userID, likeReader.LastLikedUserID)
+			}
+		})
+	}
+}
+
+func TestService_ListFollowing_MergeInbox(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name string
+
+		cursor       *Cursor
+		pageSize     int
+		mysqlRecords []VideoRecord
+		pushIDs      []uint64
+		pushRecords  []VideoRecord
+		inboxErr     error
+		visibleErr   error
+
+		wantIDs          []uint64
+		wantHasMore      bool
+		wantVisibleCalls int
+	}{
+		{
+			name:     "Redis 补充独立视频并参与排序",
+			pageSize: 10,
+			mysqlRecords: []VideoRecord{
+				{ID: 100, AuthorID: 10, Title: "mysql", CreatedAt: now.Add(-time.Hour)},
+			},
+			pushIDs: []uint64{200},
+			pushRecords: []VideoRecord{
+				{ID: 200, AuthorID: 20, Title: "redis", CreatedAt: now},
+			},
+			wantIDs:          []uint64{200, 100},
+			wantVisibleCalls: 1,
+		},
+		{
+			name:     "重复视频优先保留 MySQL 数据",
+			pageSize: 10,
+			mysqlRecords: []VideoRecord{
+				{ID: 100, AuthorID: 10, Title: "mysql", CreatedAt: now},
+			},
+			pushIDs: []uint64{100},
+			pushRecords: []VideoRecord{
+				{ID: 100, AuthorID: 10, Title: "redis", CreatedAt: now},
+			},
+			wantIDs:          []uint64{100},
+			wantVisibleCalls: 1,
+		},
+		{
+			name:     "第二页过滤比游标更新的 Redis 记录",
+			cursor:   &Cursor{CreatedAt: now, ID: 150},
+			pageSize: 10,
+			mysqlRecords: []VideoRecord{
+				{ID: 140, AuthorID: 10, CreatedAt: now.Add(-time.Minute)},
+			},
+			pushIDs: []uint64{200, 130},
+			pushRecords: []VideoRecord{
+				{ID: 200, AuthorID: 20, CreatedAt: now.Add(time.Minute)},
+				{ID: 130, AuthorID: 20, CreatedAt: now.Add(-2 * time.Minute)},
+			},
+			wantIDs:          []uint64{140, 130},
+			wantVisibleCalls: 1,
+		},
+		{
+			name:     "Redis 读取失败时降级为 MySQL",
+			pageSize: 10,
+			mysqlRecords: []VideoRecord{
+				{ID: 100, AuthorID: 10, CreatedAt: now},
+			},
+			inboxErr: errDBError,
+			wantIDs:  []uint64{100},
+		},
+		{
+			name:     "Redis 视频元数据查询失败时降级为 MySQL",
+			pageSize: 10,
+			mysqlRecords: []VideoRecord{
+				{ID: 100, AuthorID: 10, CreatedAt: now},
+			},
+			pushIDs:          []uint64{200},
+			visibleErr:       errDBError,
+			wantIDs:          []uint64{100},
+			wantVisibleCalls: 1,
+		},
+		{
+			name:     "合并后仍能正确生成下一页",
+			pageSize: 2,
+			mysqlRecords: []VideoRecord{
+				{ID: 100, AuthorID: 10, CreatedAt: now.Add(-time.Hour)},
+				{ID: 90, AuthorID: 10, CreatedAt: now.Add(-2 * time.Hour)},
+			},
+			pushIDs: []uint64{200},
+			pushRecords: []VideoRecord{
+				{ID: 200, AuthorID: 20, CreatedAt: now},
+			},
+			wantIDs:          []uint64{200, 100},
+			wantHasMore:      true,
+			wantVisibleCalls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeFeedRepository{
+				ListFollowingFunc: func(ctx context.Context, followerID uint64, cursor *Cursor, limit int) ([]VideoRecord, error) {
+					return tt.mysqlRecords, nil
+				},
+				ListVisibleByIDsFunc: func(ctx context.Context, followerID uint64, videoIDs []uint64) ([]VideoRecord, error) {
+					return tt.pushRecords, tt.visibleErr
+				},
+			}
+			inbox := &fakeFeedInboxReader{
+				ListFunc: func(ctx context.Context, userID uint64, cursor uint64, limit int) ([]uint64, error) {
+					return tt.pushIDs, tt.inboxErr
+				},
+			}
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			svc := NewService(
+				repo,
+				&fakeFeedUserReader{},
+				&fakeFeedLikeReader{},
+				inbox,
+				logger,
+			)
+
+			page, err := svc.ListFollowing(context.Background(), 1, tt.cursor, tt.pageSize)
+			if err != nil {
+				t.Fatalf("list following: %v", err)
+			}
+
+			gotIDs := make([]uint64, 0, len(page.Items))
+			for _, item := range page.Items {
+				gotIDs = append(gotIDs, item.ID)
+			}
+			if len(gotIDs) != len(tt.wantIDs) {
+				t.Fatalf("expected IDs %v, got %v", tt.wantIDs, gotIDs)
+			}
+			for i := range tt.wantIDs {
+				if gotIDs[i] != tt.wantIDs[i] {
+					t.Fatalf("expected IDs %v, got %v", tt.wantIDs, gotIDs)
+				}
+			}
+			if page.HasMore != tt.wantHasMore {
+				t.Errorf("expected HasMore %t, got %t", tt.wantHasMore, page.HasMore)
+			}
+			if repo.ListVisibleCallCount != tt.wantVisibleCalls {
+				t.Errorf("expected ListVisible calls %d, got %d", tt.wantVisibleCalls, repo.ListVisibleCallCount)
 			}
 		})
 	}

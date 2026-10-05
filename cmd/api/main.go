@@ -77,6 +77,7 @@ func run() error {
 			logger.Error("close redis", "error", err)
 		}
 	}()
+	redisInbox := feed.NewRedisInbox(redisClient, feed.DefaultInboxMaxLen)
 
 	hasher, err := password.NewBcryptHasher(bcrypt.DefaultCost)
 	if err != nil {
@@ -113,7 +114,7 @@ func run() error {
 		startupCtx,
 		cfg,
 		outboxRepository,
-		redisClient,
+		redisInbox,
 		followRepository,
 		logger,
 	)
@@ -137,7 +138,7 @@ func run() error {
 	videoHandler := video.NewHandler(videoService, likeService)
 
 	feedRepository := feed.NewGORMRepository(db)
-	feedService := feed.NewService(feedRepository, userService, likeService)
+	feedService := feed.NewService(feedRepository, userService, likeService, redisInbox, logger)
 	feedHandler := feed.NewHandler(feedService, logger)
 
 	engine := router.New(router.Dependencies{
