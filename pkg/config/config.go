@@ -20,12 +20,16 @@ const (
 	defaultLocalStorageDir   = "./data/videos"
 	defaultOutboxPublish     = time.Second
 
-	defaultRabbitMQExchange     = "feed.events"
-	defaultRabbitMQExchangeType = "topic"
-	defaultRabbitMQRoutingKey   = "video.published"
-	defaultRabbitMQQueue        = "feed.fanout.video.published"
-	defaultRabbitMQDLX          = "feed.dlx"
-	defaultRabbitMQDLQ          = "feed.fanout.video.published.dlq"
+	defaultRabbitMQExchange      = "feed.events"
+	defaultRabbitMQExchangeType  = "topic"
+	defaultRabbitMQRoutingKey    = "video.published"
+	defaultRabbitMQQueue         = "feed.fanout.video.published"
+	defaultRabbitMQDLX           = "feed.dlx"
+	defaultRabbitMQDLQ           = "feed.fanout.video.published.dlq"
+	defaultRabbitMQRetryExchange = "feed.retry"
+	defaultRabbitMQRetryQueue    = "feed.fanout.video.published.retry"
+	defaultRabbitMQMaxRetries    = 3
+	defaultRabbitMQRetryDelay    = 5 * time.Second
 )
 
 // Config 保存应用启动时需要的全部配置。
@@ -74,13 +78,17 @@ type OutboxConfig struct {
 }
 
 type RabbitMQConfig struct {
-	URL          string
-	Exchange     string
-	ExchangeType string
-	RoutingKey   string
-	Queue        string
-	DLX          string
-	DLQ          string
+	URL           string
+	Exchange      string
+	ExchangeType  string
+	RoutingKey    string
+	Queue         string
+	DLX           string
+	DLQ           string
+	RetryExchange string
+	RetryQueue    string
+	MaxRetries    int
+	RetryDelay    time.Duration
 }
 
 // Load 从环境变量和默认值构造配置。
@@ -91,6 +99,13 @@ func Load() (Config, error) {
 	outboxPublishInterval, err := durationFromEnv(
 		"OUTBOX_PUBLISH_INTERVAL",
 		defaultOutboxPublish,
+	)
+	if err != nil {
+		return Config{}, fmt.Errorf("load config: %w", err)
+	}
+	rabbitMQRetryDelay, err := durationFromEnv(
+		"RABBITMQ_RETRY_DELAY",
+		defaultRabbitMQRetryDelay,
 	)
 	if err != nil {
 		return Config{}, fmt.Errorf("load config: %w", err)
@@ -125,13 +140,17 @@ func Load() (Config, error) {
 			PublishInterval: outboxPublishInterval,
 		},
 		RabbitMQ: RabbitMQConfig{
-			URL:          strings.TrimSpace(os.Getenv("RABBITMQ_URL")),
-			Exchange:     envOrDefault("RABBITMQ_EXCHANGE", defaultRabbitMQExchange),
-			ExchangeType: envOrDefault("RABBITMQ_EXCHANGE_TYPE", defaultRabbitMQExchangeType),
-			RoutingKey:   envOrDefault("RABBITMQ_ROUTING_KEY", defaultRabbitMQRoutingKey),
-			Queue:        envOrDefault("RABBITMQ_QUEUE", defaultRabbitMQQueue),
-			DLX:          envOrDefault("RABBITMQ_DLX", defaultRabbitMQDLX),
-			DLQ:          envOrDefault("RABBITMQ_DLQ", defaultRabbitMQDLQ),
+			URL:           strings.TrimSpace(os.Getenv("RABBITMQ_URL")),
+			Exchange:      envOrDefault("RABBITMQ_EXCHANGE", defaultRabbitMQExchange),
+			ExchangeType:  envOrDefault("RABBITMQ_EXCHANGE_TYPE", defaultRabbitMQExchangeType),
+			RoutingKey:    envOrDefault("RABBITMQ_ROUTING_KEY", defaultRabbitMQRoutingKey),
+			Queue:         envOrDefault("RABBITMQ_QUEUE", defaultRabbitMQQueue),
+			DLX:           envOrDefault("RABBITMQ_DLX", defaultRabbitMQDLX),
+			DLQ:           envOrDefault("RABBITMQ_DLQ", defaultRabbitMQDLQ),
+			RetryExchange: envOrDefault("RABBITMQ_RETRY_EXCHANGE", defaultRabbitMQRetryExchange),
+			RetryQueue:    envOrDefault("RABBITMQ_RETRY_QUEUE", defaultRabbitMQRetryQueue),
+			MaxRetries:    envOrDefaultInt("RABBITMQ_MAX_RETRIES", defaultRabbitMQMaxRetries),
+			RetryDelay:    rabbitMQRetryDelay,
 		},
 	}
 
@@ -205,6 +224,18 @@ func (c Config) validate() error {
 	}
 	if strings.TrimSpace(c.RabbitMQ.DLQ) == "" {
 		return fmt.Errorf("RABBITMQ_DLQ must not be empty")
+	}
+	if strings.TrimSpace(c.RabbitMQ.RetryExchange) == "" {
+		return fmt.Errorf("RABBITMQ_RETRY_EXCHANGE must not be empty")
+	}
+	if strings.TrimSpace(c.RabbitMQ.RetryQueue) == "" {
+		return fmt.Errorf("RABBITMQ_RETRY_QUEUE must not be empty")
+	}
+	if c.RabbitMQ.MaxRetries < 0 {
+		return fmt.Errorf("RABBITMQ_MAX_RETRIES must not be negative")
+	}
+	if c.RabbitMQ.RetryDelay <= 0 {
+		return fmt.Errorf("RABBITMQ_RETRY_DELAY must be positive")
 	}
 
 	return nil

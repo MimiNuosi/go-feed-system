@@ -3,14 +3,20 @@ package feed
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+
+	"go-feed-system/pkg/rabbitmq"
 )
 
-const videoPublishedMessageType = "video.published"
+const (
+	videoPublishedMessageType = "video.published"
+	retryCountHeader          = "x-retry-count"
+)
 
 // videoPublishedMessage 是 Consumer 侧的消息契约。
 //
@@ -29,31 +35,42 @@ type FanoutHandler interface {
 	Fanout(ctx context.Context, event VideoPublishedEvent) error
 }
 
+// RetryMessagePublisher 负责把失败消息重新发布到 Retry Exchange。
+type RetryMessagePublisher interface {
+	Publish(ctx context.Context, message rabbitmq.Message) error
+}
+
 // RabbitConsumer 从 RabbitMQ 队列消费视频发布事件。
 type RabbitConsumer struct {
-	channel *amqp.Channel
-	queue   string
-	fanout  FanoutHandler
-	logger  *slog.Logger
+	channel        *amqp.Channel
+	queue          string
+	fanout         FanoutHandler
+	retryPublisher RetryMessagePublisher
+	maxRetries     int
+	logger         *slog.Logger
 }
 
 func NewRabbitConsumer(
 	channel *amqp.Channel,
 	queue string,
 	fanout FanoutHandler,
+	retryPublisher RetryMessagePublisher,
+	maxRetries int,
 	logger *slog.Logger,
 ) *RabbitConsumer {
 	return &RabbitConsumer{
-		channel: channel,
-		queue:   queue,
-		fanout:  fanout,
-		logger:  logger,
+		channel:        channel,
+		queue:          queue,
+		fanout:         fanout,
+		retryPublisher: retryPublisher,
+		maxRetries:     maxRetries,
+		logger:         logger,
 	}
 }
 
 // Consume 启动长期消费循环，直到 context 被取消。
 func (c *RabbitConsumer) Consume(ctx context.Context) error {
-	if c.channel == nil || c.queue == "" || c.fanout == nil || c.logger == nil {
+	if c.channel == nil || c.queue == "" || c.fanout == nil || c.retryPublisher == nil || c.logger == nil {
 		return fmt.Errorf("consume feed events: consumer is not properly initialized")
 	}
 
@@ -143,11 +160,15 @@ func (c *RabbitConsumer) handleDelivery(ctx context.Context, delivery amqp.Deliv
 			c.nack(delivery, true)
 			return
 		}
-		c.logger.Error("consume feed events: failed to fanout event",
-			"message_id", delivery.MessageId,
-			"error", err,
-		)
-		c.nack(delivery, false)
+		if errors.Is(err, ErrInvalidInput) {
+			c.logger.Error("consume feed events: permanent fanout failure",
+				"message_id", delivery.MessageId,
+				"error", err,
+			)
+			c.nack(delivery, false)
+			return
+		}
+		c.retryOrDeadLetter(ctx, delivery, err)
 		return
 	}
 
@@ -157,6 +178,79 @@ func (c *RabbitConsumer) handleDelivery(ctx context.Context, delivery amqp.Deliv
 			"error", err,
 		)
 	}
+}
+
+func (c *RabbitConsumer) retryOrDeadLetter(
+	ctx context.Context,
+	delivery amqp.Delivery,
+	fanoutErr error,
+) {
+	retryCount := retryCountFromHeaders(delivery.Headers)
+	if retryCount >= c.maxRetries {
+		c.logger.Error("consume feed events: max retries exceeded",
+			"message_id", delivery.MessageId,
+			"retry_count", retryCount,
+			"max_retries", c.maxRetries,
+			"error", fanoutErr,
+		)
+		c.nack(delivery, false)
+		return
+	}
+
+	headers := cloneHeaders(delivery.Headers)
+	headers[retryCountHeader] = int32(retryCount + 1)
+
+	message := rabbitmq.Message{
+		MessageID: delivery.MessageId,
+		Type:      delivery.Type,
+		Body:      delivery.Body,
+		Timestamp: delivery.Timestamp,
+		Headers:   headers,
+	}
+
+	if err := c.retryPublisher.Publish(ctx, message); err != nil {
+		c.logger.Error("consume feed events: publish retry failed",
+			"message_id", delivery.MessageId,
+			"retry_count", retryCount+1,
+			"error", err,
+		)
+		c.nack(delivery, true)
+		return
+	}
+
+	if err := delivery.Ack(false); err != nil {
+		c.logger.Error("consume feed events: ack retried message failed",
+			"message_id", delivery.MessageId,
+			"error", err,
+		)
+	}
+}
+
+func retryCountFromHeaders(headers amqp.Table) int {
+	if headers == nil {
+		return 0
+	}
+
+	switch value := headers[retryCountHeader].(type) {
+	case int:
+		return value
+	case int32:
+		return int(value)
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	default:
+		return 0
+	}
+}
+
+func cloneHeaders(headers amqp.Table) amqp.Table {
+	cloned := make(amqp.Table, len(headers)+1)
+	for key, value := range headers {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func (c *RabbitConsumer) nack(delivery amqp.Delivery, requeue bool) {

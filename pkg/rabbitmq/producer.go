@@ -23,6 +23,7 @@ type Message struct {
 	Type      string
 	Body      []byte
 	Timestamp time.Time
+	Headers   amqp.Table
 }
 
 // Producer 负责保持 RabbitMQ 连接并发送 Persistent + Publisher Confirm 消息。
@@ -70,6 +71,7 @@ func (p *Producer) Publish(ctx context.Context, message Message) error {
 		Type:         message.Type,
 		Timestamp:    message.Timestamp,
 		Body:         message.Body,
+		Headers:      message.Headers,
 	}
 
 	// 2. 发送消息，返回一个 Confirmation 对象

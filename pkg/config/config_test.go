@@ -91,6 +91,18 @@ func TestLoadRabbitMQConfig(t *testing.T) {
 	if cfg.RabbitMQ.DLQ != defaultRabbitMQDLQ {
 		t.Errorf("expected DLQ %q, got %q", defaultRabbitMQDLQ, cfg.RabbitMQ.DLQ)
 	}
+	if cfg.RabbitMQ.RetryExchange != defaultRabbitMQRetryExchange {
+		t.Errorf("expected retry exchange %q, got %q", defaultRabbitMQRetryExchange, cfg.RabbitMQ.RetryExchange)
+	}
+	if cfg.RabbitMQ.RetryQueue != defaultRabbitMQRetryQueue {
+		t.Errorf("expected retry queue %q, got %q", defaultRabbitMQRetryQueue, cfg.RabbitMQ.RetryQueue)
+	}
+	if cfg.RabbitMQ.MaxRetries != defaultRabbitMQMaxRetries {
+		t.Errorf("expected max retries %d, got %d", defaultRabbitMQMaxRetries, cfg.RabbitMQ.MaxRetries)
+	}
+	if cfg.RabbitMQ.RetryDelay != defaultRabbitMQRetryDelay {
+		t.Errorf("expected retry delay %v, got %v", defaultRabbitMQRetryDelay, cfg.RabbitMQ.RetryDelay)
+	}
 }
 
 func TestLoadRequiresRabbitMQURL(t *testing.T) {

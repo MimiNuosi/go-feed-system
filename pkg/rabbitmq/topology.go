@@ -41,7 +41,14 @@ func DeclareTopology(
 		return fmt.Errorf("declare dead letter exchange %s: %w", cfg.DLX, err)
 	}
 
-	// 3. 声明主 Queue (需要绑定死信交换机的参数)
+	// 3. 声明重试 Exchange
+	if err := channel.ExchangeDeclare(
+		cfg.RetryExchange, cfg.ExchangeType, true, false, false, false, nil,
+	); err != nil {
+		return fmt.Errorf("declare retry exchange %s: %w", cfg.RetryExchange, err)
+	}
+
+	// 4. 声明主 Queue (需要绑定死信交换机的参数)
 	mainQueueArgs := amqp.Table{
 		"x-dead-letter-exchange": cfg.DLX,
 	}
@@ -51,25 +58,44 @@ func DeclareTopology(
 		return fmt.Errorf("declare main queue %s: %w", cfg.Queue, err)
 	}
 
-	// 4. 声明 DLQ
+	// 5. 声明 DLQ
 	if _, err := channel.QueueDeclare(
 		cfg.DLQ, true, false, false, false, nil,
 	); err != nil {
 		return fmt.Errorf("declare dead letter queue %s: %w", cfg.DLQ, err)
 	}
 
-	// 5. 绑定主 Queue
+	// 6. 声明 Retry Queue，TTL 到期后重新投递回主 Exchange。
+	retryQueueArgs := amqp.Table{
+		"x-dead-letter-exchange":    cfg.Exchange,
+		"x-dead-letter-routing-key": cfg.RoutingKey,
+		"x-message-ttl":             int32(cfg.RetryDelay.Milliseconds()),
+	}
+	if _, err := channel.QueueDeclare(
+		cfg.RetryQueue, true, false, false, false, retryQueueArgs,
+	); err != nil {
+		return fmt.Errorf("declare retry queue %s: %w", cfg.RetryQueue, err)
+	}
+
+	// 7. 绑定主 Queue
 	if err := channel.QueueBind(
 		cfg.Queue, cfg.RoutingKey, cfg.Exchange, false, nil,
 	); err != nil {
 		return fmt.Errorf("bind main queue %s: %w", cfg.Queue, err)
 	}
 
-	// 6. 绑定 DLQ
+	// 8. 绑定 DLQ
 	if err := channel.QueueBind(
 		cfg.DLQ, cfg.RoutingKey, cfg.DLX, false, nil,
 	); err != nil {
 		return fmt.Errorf("bind dead letter queue %s: %w", cfg.DLQ, err)
+	}
+
+	// 9. 绑定 Retry Queue
+	if err := channel.QueueBind(
+		cfg.RetryQueue, cfg.RoutingKey, cfg.RetryExchange, false, nil,
+	); err != nil {
+		return fmt.Errorf("bind retry queue %s: %w", cfg.RetryQueue, err)
 	}
 
 	return nil

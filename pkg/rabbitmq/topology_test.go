@@ -22,13 +22,17 @@ func TestDeclareTopologyIntegration(t *testing.T) {
 
 	suffix := strings.ReplaceAll(uuid.NewString(), "-", "")
 	cfg := config.RabbitMQConfig{
-		URL:          url,
-		Exchange:     "test.feed.events." + suffix,
-		ExchangeType: "topic",
-		RoutingKey:   "test.video.published." + suffix,
-		Queue:        "test.feed.queue." + suffix,
-		DLX:          "test.feed.dlx." + suffix,
-		DLQ:          "test.feed.dlq." + suffix,
+		URL:           url,
+		Exchange:      "test.feed.events." + suffix,
+		ExchangeType:  "topic",
+		RoutingKey:    "test.video.published." + suffix,
+		Queue:         "test.feed.queue." + suffix,
+		DLX:           "test.feed.dlx." + suffix,
+		DLQ:           "test.feed.dlq." + suffix,
+		RetryExchange: "test.feed.retry." + suffix,
+		RetryQueue:    "test.feed.retry.queue." + suffix,
+		MaxRetries:    3,
+		RetryDelay:    time.Second,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -55,12 +59,12 @@ func TestDeclareTopologyIntegration(t *testing.T) {
 	})
 
 	t.Cleanup(func() {
-		for _, queue := range []string{cfg.Queue, cfg.DLQ} {
+		for _, queue := range []string{cfg.Queue, cfg.DLQ, cfg.RetryQueue} {
 			if _, err := channel.QueueDelete(queue, false, false, false); err != nil {
 				t.Errorf("delete queue %s: %v", queue, err)
 			}
 		}
-		for _, exchange := range []string{cfg.Exchange, cfg.DLX} {
+		for _, exchange := range []string{cfg.Exchange, cfg.DLX, cfg.RetryExchange} {
 			if err := channel.ExchangeDelete(exchange, false, false); err != nil {
 				t.Errorf("delete exchange %s: %v", exchange, err)
 			}
@@ -120,6 +124,32 @@ func TestDeclareTopologyIntegration(t *testing.T) {
 		nil,
 	); err != nil {
 		t.Fatalf("verify dead letter queue: %v", err)
+	}
+	retryQueueArgs := amqp.Table{
+		"x-dead-letter-exchange":    cfg.Exchange,
+		"x-dead-letter-routing-key": cfg.RoutingKey,
+		"x-message-ttl":             int32(cfg.RetryDelay.Milliseconds()),
+	}
+	if err := channel.ExchangeDeclarePassive(
+		cfg.RetryExchange,
+		cfg.ExchangeType,
+		true,
+		false,
+		false,
+		false,
+		nil,
+	); err != nil {
+		t.Fatalf("verify retry exchange: %v", err)
+	}
+	if _, err := channel.QueueDeclarePassive(
+		cfg.RetryQueue,
+		true,
+		false,
+		false,
+		false,
+		retryQueueArgs,
+	); err != nil {
+		t.Fatalf("verify retry queue: %v", err)
 	}
 
 	body := []byte("topology-test")

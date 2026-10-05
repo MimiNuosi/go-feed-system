@@ -19,6 +19,7 @@ type feedMessaging struct {
 	rabbitConn      *amqp.Connection
 	consumerChannel *amqp.Channel
 	producer        *rabbitmq.Producer
+	retryProducer   *rabbitmq.Producer
 	consumer        feedConsumerRunner
 	worker          outboxWorkerRunner
 }
@@ -69,16 +70,22 @@ func newFeedMessaging(
 	}
 
 	// 4. 组装 Feed 消费链路。
+	producer := rabbitmq.NewProducer(cfg.RabbitMQ, logger)
+	retryConfig := cfg.RabbitMQ
+	retryConfig.Exchange = cfg.RabbitMQ.RetryExchange
+	retryProducer := rabbitmq.NewProducer(retryConfig, logger)
+
 	fanoutService := feed.NewFanoutService(followers, inbox)
 	consumer := feed.NewRabbitConsumer(
 		consumerChannel,
 		cfg.RabbitMQ.Queue,
 		fanoutService,
+		retryProducer,
+		cfg.RabbitMQ.MaxRetries,
 		logger,
 	)
 
 	// 5. 组装 Outbox 发布链路。Producer 自己维护发送 Channel 和重连。
-	producer := rabbitmq.NewProducer(cfg.RabbitMQ, logger)
 	messagePublisher := outbox.NewRabbitMQPublisher(producer)
 	outboxPublisher := outbox.NewPublisher(
 		repository,
@@ -96,6 +103,7 @@ func newFeedMessaging(
 		rabbitConn:      rabbitConn,
 		consumerChannel: consumerChannel,
 		producer:        producer,
+		retryProducer:   retryProducer,
 		consumer:        consumer,
 		worker:          worker,
 	}, nil
@@ -143,6 +151,11 @@ func (m *feedMessaging) Close() error {
 	if m.producer != nil {
 		if err := m.producer.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("close rabbitmq producer: %w", err))
+		}
+	}
+	if m.retryProducer != nil {
+		if err := m.retryProducer.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close rabbitmq retry producer: %w", err))
 		}
 	}
 	if m.consumerChannel != nil {
