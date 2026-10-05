@@ -20,8 +20,16 @@ type feedMessaging struct {
 	rabbitConn      *amqp.Connection
 	consumerChannel *amqp.Channel
 	producer        *rabbitmq.Producer
-	consumer        *feed.RabbitConsumer
-	worker          *outbox.Worker
+	consumer        feedConsumerRunner
+	worker          outboxWorkerRunner
+}
+
+type feedConsumerRunner interface {
+	Consume(ctx context.Context) error
+}
+
+type outboxWorkerRunner interface {
+	Run(ctx context.Context) error
 }
 
 func newFeedMessaging(
