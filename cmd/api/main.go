@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -108,6 +109,23 @@ func run() error {
 	followService := interaction.NewFollowService(followRepository, userService)
 	followHandler := interaction.NewFollowHandler(followService, logger)
 
+	messaging, err := newFeedMessaging(
+		startupCtx,
+		cfg,
+		outboxRepository,
+		redisClient,
+		followRepository,
+		logger,
+	)
+	if err != nil {
+		return fmt.Errorf("setup feed messaging: %w", err)
+	}
+	defer func() {
+		if err := messaging.Close(); err != nil {
+			logger.Error("close feed messaging", "error", err)
+		}
+	}()
+
 	likeRepository := interaction.NewGORMLikeRepository(db)
 	likeService := interaction.NewLikeService(likeRepository, videoService)
 	likeHandler := interaction.NewLikeHandler(likeService, logger)
@@ -158,33 +176,64 @@ func run() error {
 	//  如果收到第二次 Ctrl+C，程序应立即退出，不再等待正在处理的请求完成。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 
-	errChan := make(chan error, 1)
+	serverErrCh := make(chan error, 1)
 	go func() {
-		errChan <- server.ListenAndServe()
+		serverErrCh <- server.ListenAndServe()
 	}()
 
+	messagingErrCh := make(chan error, 1)
+	go func() {
+		messagingErrCh <- messaging.Run(runCtx)
+	}()
+
+	var runErr error
+	messagingDone := false
+
 	select {
-	case err := <-errChan:
-		if err != nil && err != http.ErrServerClosed {
-			return fmt.Errorf("server failed to start: %w", err)
+	case err := <-serverErrCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			runErr = fmt.Errorf("server failed to start: %w", err)
+		}
+	case err := <-messagingErrCh:
+		messagingDone = true
+		if err != nil {
+			runErr = fmt.Errorf("feed messaging stopped: %w", err)
+		} else {
+			runErr = errors.New("feed messaging stopped unexpectedly")
 		}
 	case <-ctx.Done():
-		// 1. 立即调用 stop()，注销 NotifyContext 对信号的接管。
-		// 此时，如果用户再按 Ctrl+C，系统会直接 kill 掉进程（默认行为），实现强制退出。
-		// 注意：这里也解释了为什么外层的 defer stop() 不够，
-		// 因为 defer 要等到 run() 函数返回才执行，而我们要在进入 Shutdown 循环前就恢复默认行为。
+		// 恢复第二次 Ctrl+C 的默认强制退出行为。
 		stop()
-
 		logger.Info("signal received, shutting down gracefully")
+	}
 
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout)
-		defer cancel()
+	cancelRun()
 
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("shutdown: %w", err)
+	shutdownCtx, cancelShutdown := context.WithTimeout(
+		context.Background(),
+		cfg.HTTP.ShutdownTimeout,
+	)
+	defer cancelShutdown()
+
+	if err := server.Shutdown(shutdownCtx); err != nil && runErr == nil {
+		runErr = fmt.Errorf("shutdown server: %w", err)
+	}
+
+	if !messagingDone {
+		select {
+		case err := <-messagingErrCh:
+			if err != nil && runErr == nil {
+				runErr = fmt.Errorf("stop feed messaging: %w", err)
+			}
+		case <-shutdownCtx.Done():
+			if runErr == nil {
+				runErr = fmt.Errorf("stop feed messaging: %w", shutdownCtx.Err())
+			}
 		}
 	}
 
-	return nil
+	return runErr
 }
