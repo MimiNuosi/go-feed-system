@@ -29,6 +29,21 @@ type fakeFollowRepository struct {
 	DeleteCallCount int
 }
 
+type fakeBigAuthorCacheInvalidator struct {
+	DeleteFunc func(ctx context.Context, userID uint64) error
+	CallCount  int
+	LastUserID uint64
+}
+
+func (f *fakeBigAuthorCacheInvalidator) Delete(ctx context.Context, userID uint64) error {
+	f.CallCount++
+	f.LastUserID = userID
+	if f.DeleteFunc != nil {
+		return f.DeleteFunc(ctx, userID)
+	}
+	return nil
+}
+
 func (f *fakeFollowRepository) Create(ctx context.Context, followerID, followeeID uint64) error {
 	f.CreateCallCount++
 	if f.CreateFunc != nil {
@@ -145,7 +160,7 @@ func TestFollowService_Follow(t *testing.T) {
 				},
 			}
 
-			svc := NewFollowService(repo, userReader)
+			svc := NewFollowService(repo, userReader, nil, nil)
 
 			// 执行
 			err := svc.Follow(context.Background(), tt.followerID, tt.followeeID)
@@ -222,7 +237,7 @@ func TestFollowService_Unfollow(t *testing.T) {
 					return tt.mockDeleteErr
 				},
 			}
-			svc := NewFollowService(repo, &fakeUserReader{})
+			svc := NewFollowService(repo, &fakeUserReader{}, nil, nil)
 
 			err := svc.Unfollow(context.Background(), tt.followerID, tt.followeeID)
 
@@ -245,4 +260,61 @@ func TestFollowService_Unfollow(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFollowService_InvalidatesBigAuthorCache(t *testing.T) {
+	t.Run("关注成功后删除缓存", func(t *testing.T) {
+		cache := &fakeBigAuthorCacheInvalidator{}
+		svc := NewFollowService(
+			&fakeFollowRepository{},
+			&fakeUserReader{},
+			cache,
+			nil,
+		)
+
+		if err := svc.Follow(context.Background(), 1, 2); err != nil {
+			t.Fatalf("follow: %v", err)
+		}
+		if cache.CallCount != 1 || cache.LastUserID != 1 {
+			t.Fatalf("expected cache invalidation for user 1, got count=%d user=%d", cache.CallCount, cache.LastUserID)
+		}
+	})
+
+	t.Run("取消关注成功后删除缓存", func(t *testing.T) {
+		cache := &fakeBigAuthorCacheInvalidator{}
+		svc := NewFollowService(
+			&fakeFollowRepository{},
+			&fakeUserReader{},
+			cache,
+			nil,
+		)
+
+		if err := svc.Unfollow(context.Background(), 1, 2); err != nil {
+			t.Fatalf("unfollow: %v", err)
+		}
+		if cache.CallCount != 1 || cache.LastUserID != 1 {
+			t.Fatalf("expected cache invalidation for user 1, got count=%d user=%d", cache.CallCount, cache.LastUserID)
+		}
+	})
+
+	t.Run("缓存删除失败不影响关注结果", func(t *testing.T) {
+		cache := &fakeBigAuthorCacheInvalidator{
+			DeleteFunc: func(ctx context.Context, userID uint64) error {
+				return errors.New("redis unavailable")
+			},
+		}
+		svc := NewFollowService(
+			&fakeFollowRepository{},
+			&fakeUserReader{},
+			cache,
+			nil,
+		)
+
+		if err := svc.Follow(context.Background(), 1, 2); err != nil {
+			t.Fatalf("expected cache failure to be ignored, got %v", err)
+		}
+		if cache.CallCount != 1 {
+			t.Fatalf("expected cache invalidation call, got %d", cache.CallCount)
+		}
+	})
 }

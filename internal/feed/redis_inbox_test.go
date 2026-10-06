@@ -27,7 +27,11 @@ func openTestRedis(t *testing.T) *redis.Client {
 		db = parsed
 	}
 
-	client := redis.NewClient(&redis.Options{Addr: addr, DB: db})
+	client := redis.NewClient(&redis.Options{
+		Addr:     addr,
+		Password: os.Getenv("TEST_REDIS_PASSWORD"),
+		DB:       db,
+	})
 
 	if err := client.Ping(context.Background()).Err(); err != nil {
 		t.Skipf("redis not available at %s: %v", addr, err)

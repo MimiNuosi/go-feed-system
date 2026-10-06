@@ -31,6 +31,7 @@ const (
 	defaultRabbitMQMaxRetries    = 3
 	defaultRabbitMQRetryDelay    = 5 * time.Second
 	defaultFanoutThreshold       = 1000
+	defaultBigAuthorCacheTTL     = time.Minute
 )
 
 // Config 保存应用启动时需要的全部配置。
@@ -95,6 +96,7 @@ type RabbitMQConfig struct {
 
 type FeedConfig struct {
 	FanoutFollowerThreshold int
+	BigAuthorCacheTTL       time.Duration
 }
 
 // Load 从环境变量和默认值构造配置。
@@ -112,6 +114,13 @@ func Load() (Config, error) {
 	rabbitMQRetryDelay, err := durationFromEnv(
 		"RABBITMQ_RETRY_DELAY",
 		defaultRabbitMQRetryDelay,
+	)
+	if err != nil {
+		return Config{}, fmt.Errorf("load config: %w", err)
+	}
+	bigAuthorCacheTTL, err := durationFromEnv(
+		"FEED_BIG_AUTHOR_CACHE_TTL",
+		defaultBigAuthorCacheTTL,
 	)
 	if err != nil {
 		return Config{}, fmt.Errorf("load config: %w", err)
@@ -163,6 +172,7 @@ func Load() (Config, error) {
 				"FEED_FANOUT_FOLLOWER_THRESHOLD",
 				defaultFanoutThreshold,
 			),
+			BigAuthorCacheTTL: bigAuthorCacheTTL,
 		},
 	}
 
@@ -251,6 +261,9 @@ func (c Config) validate() error {
 	}
 	if c.Feed.FanoutFollowerThreshold <= 0 {
 		return fmt.Errorf("FEED_FANOUT_FOLLOWER_THRESHOLD must be positive")
+	}
+	if c.Feed.BigAuthorCacheTTL <= 0 {
+		return fmt.Errorf("FEED_BIG_AUTHOR_CACHE_TTL must be positive")
 	}
 
 	return nil

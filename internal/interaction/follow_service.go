@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"go-feed-system/internal/user"
 )
@@ -12,15 +13,28 @@ type UserReader interface {
 	GetByID(ctx context.Context, id uint64) (*user.User, error)
 }
 
-type FollowService struct {
-	follows FollowRepository
-	users   UserReader
+type BigAuthorCacheInvalidator interface {
+	Delete(ctx context.Context, userID uint64) error
 }
 
-func NewFollowService(follows FollowRepository, users UserReader) *FollowService {
+type FollowService struct {
+	follows        FollowRepository
+	users          UserReader
+	bigAuthorCache BigAuthorCacheInvalidator
+	logger         *slog.Logger
+}
+
+func NewFollowService(
+	follows FollowRepository,
+	users UserReader,
+	bigAuthorCache BigAuthorCacheInvalidator,
+	logger *slog.Logger,
+) *FollowService {
 	return &FollowService{
-		follows: follows,
-		users:   users,
+		follows:        follows,
+		users:          users,
+		bigAuthorCache: bigAuthorCache,
+		logger:         logger,
 	}
 }
 
@@ -48,11 +62,13 @@ func (s *FollowService) Follow(ctx context.Context, followerID, followeeID uint6
 	if err != nil {
 		// 核心幂等逻辑：如果已经关注过了，视为成功
 		if errors.Is(err, ErrAlreadyFollowing) {
+			s.invalidateBigAuthors(ctx, followerID)
 			return nil
 		}
 		return fmt.Errorf("follow user: %w", err)
 	}
 
+	s.invalidateBigAuthors(ctx, followerID)
 	return nil
 }
 
@@ -75,6 +91,7 @@ func (s *FollowService) Unfollow(ctx context.Context, followerID, followeeID uin
 		return fmt.Errorf("unfollow user: delete relation: %w", err)
 	}
 
+	s.invalidateBigAuthors(ctx, followerID)
 	return nil
 }
 
@@ -89,4 +106,17 @@ func (s *FollowService) IsFollowing(ctx context.Context, followerID, followeeID 
 	}
 
 	return following, nil
+}
+
+func (s *FollowService) invalidateBigAuthors(ctx context.Context, userID uint64) {
+	if s.bigAuthorCache == nil {
+		return
+	}
+	if err := s.bigAuthorCache.Delete(ctx, userID); err != nil {
+		logger := s.logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("invalidate big author cache", "user_id", userID, "error", err)
+	}
 }

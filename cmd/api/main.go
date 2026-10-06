@@ -78,6 +78,10 @@ func run() error {
 		}
 	}()
 	redisInbox := feed.NewRedisInbox(redisClient, feed.DefaultInboxMaxLen)
+	bigAuthorCache := feed.NewRedisBigAuthorCache(
+		redisClient,
+		cfg.Feed.BigAuthorCacheTTL,
+	)
 
 	hasher, err := password.NewBcryptHasher(bcrypt.DefaultCost)
 	if err != nil {
@@ -107,7 +111,12 @@ func run() error {
 	videoService := video.NewService(videoRepository, videoStorage, userService, logger)
 
 	followRepository := interaction.NewGORMFollowRepository(db)
-	followService := interaction.NewFollowService(followRepository, userService)
+	followService := interaction.NewFollowService(
+		followRepository,
+		userService,
+		bigAuthorCache,
+		logger,
+	)
 	followHandler := interaction.NewFollowHandler(followService, logger)
 
 	messaging, err := newFeedMessaging(
@@ -143,6 +152,7 @@ func run() error {
 		userService,
 		likeService,
 		redisInbox,
+		bigAuthorCache,
 		cfg.Feed.FanoutFollowerThreshold,
 		logger,
 	)

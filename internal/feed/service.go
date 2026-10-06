@@ -39,6 +39,7 @@ type Service struct {
 	users                   UserReader
 	likes                   LikeReader
 	inbox                   InboxReader
+	bigAuthorCache          BigAuthorCache
 	fanoutFollowerThreshold int
 	logger                  *slog.Logger
 }
@@ -48,6 +49,7 @@ func NewService(
 	users UserReader,
 	likes LikeReader,
 	inbox InboxReader,
+	bigAuthorCache BigAuthorCache,
 	fanoutFollowerThreshold int,
 	logger *slog.Logger,
 ) *Service {
@@ -59,6 +61,7 @@ func NewService(
 		users:                   users,
 		likes:                   likes,
 		inbox:                   inbox,
+		bigAuthorCache:          bigAuthorCache,
 		fanoutFollowerThreshold: fanoutFollowerThreshold,
 		logger:                  logger,
 	}
@@ -232,7 +235,7 @@ func (s *Service) loadCandidateRecords(
 	// 而且 MySQL 是事实源，Redis 是加速层，先拿事实源更符合直觉。
 	//
 	// 步骤 1：查大 V 作者 ID。
-	bigAuthorIDs, err := s.videos.ListBigAuthorIDs(ctx, userID, s.fanoutFollowerThreshold)
+	bigAuthorIDs, err := s.getBigAuthorIDs(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list following by big author ids: %w", err)
 	}
@@ -288,6 +291,37 @@ func (s *Service) backfillFromMySQL(
 	}
 
 	return mergeVideoRecords(mysqlRecords, records, cursor), nil
+}
+
+func (s *Service) getBigAuthorIDs(ctx context.Context, userID uint64) ([]uint64, error) {
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	if s.bigAuthorCache == nil {
+		return s.videos.ListBigAuthorIDs(ctx, userID, s.fanoutFollowerThreshold)
+	}
+
+	authorIDs, hit, err := s.bigAuthorCache.Get(ctx, userID)
+	if err != nil {
+		logger.Warn("feed: get big author cache failed, fallback to mysql", "error", err)
+		return s.videos.ListBigAuthorIDs(ctx, userID, s.fanoutFollowerThreshold)
+	}
+	if hit {
+		return authorIDs, nil
+	}
+
+	authorIDs, err = s.videos.ListBigAuthorIDs(ctx, userID, s.fanoutFollowerThreshold)
+	if err != nil {
+		return nil, fmt.Errorf("list big author ids: %w", err)
+	}
+
+	if err := s.bigAuthorCache.Set(ctx, userID, authorIDs); err != nil {
+		logger.Warn("feed: set big author cache failed", "error", err)
+	}
+
+	return authorIDs, nil
 }
 
 // mergeVideoRecords 把 MySQL 记录和 Redis 记录合并、去重、按复合游标排序。

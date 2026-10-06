@@ -110,6 +110,13 @@ func TestLoadRabbitMQConfig(t *testing.T) {
 			cfg.Feed.FanoutFollowerThreshold,
 		)
 	}
+	if cfg.Feed.BigAuthorCacheTTL != defaultBigAuthorCacheTTL {
+		t.Errorf(
+			"expected big author cache TTL %v, got %v",
+			defaultBigAuthorCacheTTL,
+			cfg.Feed.BigAuthorCacheTTL,
+		)
+	}
 }
 
 func TestLoadRequiresRabbitMQURL(t *testing.T) {

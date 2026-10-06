@@ -135,6 +135,36 @@ func (f *fakeFeedInboxReader) List(ctx context.Context, userID uint64, cursor ui
 	return nil, nil
 }
 
+type fakeBigAuthorCache struct {
+	GetFunc func(ctx context.Context, userID uint64) ([]uint64, bool, error)
+	SetFunc func(ctx context.Context, userID uint64, authorIDs []uint64) error
+
+	GetCallCount int
+	SetCallCount int
+	LastSetIDs   []uint64
+}
+
+func (f *fakeBigAuthorCache) Get(ctx context.Context, userID uint64) ([]uint64, bool, error) {
+	f.GetCallCount++
+	if f.GetFunc != nil {
+		return f.GetFunc(ctx, userID)
+	}
+	return nil, false, nil
+}
+
+func (f *fakeBigAuthorCache) Set(ctx context.Context, userID uint64, authorIDs []uint64) error {
+	f.SetCallCount++
+	f.LastSetIDs = authorIDs
+	if f.SetFunc != nil {
+		return f.SetFunc(ctx, userID, authorIDs)
+	}
+	return nil
+}
+
+func (f *fakeBigAuthorCache) Delete(ctx context.Context, userID uint64) error {
+	return nil
+}
+
 // 4. 表驱动测试
 func TestService_ListFollowing(t *testing.T) {
 	now := time.Now()
@@ -322,7 +352,7 @@ func TestService_ListFollowing(t *testing.T) {
 			}
 
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-			svc := NewService(videoRepo, userReader, likeReader, nil, 1000, logger)
+			svc := NewService(videoRepo, userReader, likeReader, nil, nil, 1000, logger)
 			page, err := svc.ListFollowing(context.Background(), tt.userID, tt.cursor, tt.pageSize)
 
 			// 1. 断言错误
@@ -548,6 +578,7 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 				&fakeFeedUserReader{},
 				&fakeFeedLikeReader{},
 				inbox,
+				nil,
 				1000,
 				logger,
 			)
@@ -622,6 +653,7 @@ func TestService_LoadCandidateRecords_MySQLFailures(t *testing.T) {
 				&fakeFeedUserReader{},
 				&fakeFeedLikeReader{},
 				&fakeFeedInboxReader{},
+				nil,
 				1000,
 				slog.New(slog.NewTextHandler(io.Discard, nil)),
 			)
@@ -651,6 +683,7 @@ func TestService_LoadCandidateRecords_BackfillFailure(t *testing.T) {
 		&fakeFeedUserReader{},
 		&fakeFeedLikeReader{},
 		&fakeFeedInboxReader{},
+		nil,
 		1000,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
@@ -658,5 +691,112 @@ func TestService_LoadCandidateRecords_BackfillFailure(t *testing.T) {
 	_, err := svc.loadCandidateRecords(context.Background(), 1, nil, 10)
 	if !errors.Is(err, errDBError) {
 		t.Fatalf("expected backfill error, got %v", err)
+	}
+}
+
+func TestService_GetBigAuthorIDs_Cache(t *testing.T) {
+	tests := []struct {
+		name string
+
+		cacheGetIDs []uint64
+		cacheHit    bool
+		cacheGetErr error
+		cacheSetErr error
+		mysqlIDs    []uint64
+		mysqlErr    error
+
+		wantIDs           []uint64
+		wantErr           error
+		wantMySQLCalls    int
+		wantCacheSetCalls int
+	}{
+		{
+			name:           "缓存命中不查询 MySQL",
+			cacheGetIDs:    []uint64{10},
+			cacheHit:       true,
+			mysqlIDs:       []uint64{99},
+			wantIDs:        []uint64{10},
+			wantMySQLCalls: 0,
+		},
+		{
+			name:              "缓存未命中查询 MySQL 并写回",
+			cacheHit:          false,
+			mysqlIDs:          []uint64{20},
+			wantIDs:           []uint64{20},
+			wantMySQLCalls:    1,
+			wantCacheSetCalls: 1,
+		},
+		{
+			name:              "缓存 Get 失败降级 MySQL",
+			cacheGetErr:       errDBError,
+			mysqlIDs:          []uint64{30},
+			wantIDs:           []uint64{30},
+			wantMySQLCalls:    1,
+			wantCacheSetCalls: 0,
+		},
+		{
+			name:              "缓存 Set 失败仍返回 MySQL 结果",
+			cacheHit:          false,
+			cacheSetErr:       errDBError,
+			mysqlIDs:          []uint64{40},
+			wantIDs:           []uint64{40},
+			wantMySQLCalls:    1,
+			wantCacheSetCalls: 1,
+		},
+		{
+			name:           "MySQL 查询失败时返回错误",
+			cacheHit:       false,
+			mysqlErr:       errDBError,
+			wantErr:        errDBError,
+			wantMySQLCalls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeFeedRepository{
+				ListBigAuthorIDsFunc: func(ctx context.Context, followerID uint64, threshold int) ([]uint64, error) {
+					return tt.mysqlIDs, tt.mysqlErr
+				},
+			}
+			cache := &fakeBigAuthorCache{
+				GetFunc: func(ctx context.Context, userID uint64) ([]uint64, bool, error) {
+					return tt.cacheGetIDs, tt.cacheHit, tt.cacheGetErr
+				},
+				SetFunc: func(ctx context.Context, userID uint64, authorIDs []uint64) error {
+					return tt.cacheSetErr
+				},
+			}
+			svc := &Service{
+				videos:                  repo,
+				bigAuthorCache:          cache,
+				fanoutFollowerThreshold: 1000,
+				logger:                  slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+
+			got, err := svc.getBigAuthorIDs(context.Background(), 1)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("expected error %v, got %v", tt.wantErr, err)
+			}
+			if tt.wantErr == nil {
+				if len(got) != len(tt.wantIDs) {
+					t.Fatalf("expected IDs %v, got %v", tt.wantIDs, got)
+				}
+				for i := range tt.wantIDs {
+					if got[i] != tt.wantIDs[i] {
+						t.Fatalf("expected IDs %v, got %v", tt.wantIDs, got)
+					}
+				}
+			}
+			if cache.GetCallCount != 1 {
+				t.Errorf("expected one cache Get, got %d", cache.GetCallCount)
+			}
+			if cache.SetCallCount != tt.wantCacheSetCalls {
+				t.Errorf("expected %d cache Set calls, got %d", tt.wantCacheSetCalls, cache.SetCallCount)
+			}
+			if repo.ListBigAuthorCallCount != tt.wantMySQLCalls {
+				t.Errorf("expected %d MySQL calls, got %d", tt.wantMySQLCalls, repo.ListBigAuthorCallCount)
+			}
+		})
 	}
 }
