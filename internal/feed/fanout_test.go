@@ -15,12 +15,24 @@ var (
 
 // 1. Fake FollowerReader
 type fakeFollowerReader struct {
+	CountFollowersFunc  func(ctx context.Context, authorID uint64) (int64, error)
 	ListFollowerIDsFunc func(ctx context.Context, authorID, afterID uint64, limit int) ([]uint64, error)
 
-	CallCount    int
-	LastAuthorID uint64
-	LastAfterID  uint64
-	LastLimit    int
+	CountCallCount    int
+	CallCount         int
+	LastCountAuthorID uint64
+	LastAuthorID      uint64
+	LastAfterID       uint64
+	LastLimit         int
+}
+
+func (f *fakeFollowerReader) CountFollowers(ctx context.Context, authorID uint64) (int64, error) {
+	f.CountCallCount++
+	f.LastCountAuthorID = authorID
+	if f.CountFollowersFunc != nil {
+		return f.CountFollowersFunc(ctx, authorID)
+	}
+	return 0, nil
 }
 
 func (f *fakeFollowerReader) ListFollowerIDs(ctx context.Context, authorID, afterID uint64, limit int) ([]uint64, error) {
@@ -85,11 +97,14 @@ func TestFanoutService_Fanout(t *testing.T) {
 		name  string
 		event VideoPublishedEvent
 
+		mockFollowerCount func(ctx context.Context, authorID uint64) (int64, error)
 		mockFollowers     func(ctx context.Context, authorID, afterID uint64, limit int) ([]uint64, error)
 		mockInboxAddFunc  func(ctx context.Context, userIDs []uint64, videoID uint64, publishedAt time.Time) error
 		mockInboxTrimFunc func(ctx context.Context, userID uint64) error
+		fanoutThreshold   int
 
 		wantErr          error
+		wantCountCall    int
 		wantAddCall      int
 		wantTrimCall     int
 		wantFollowerCall int
@@ -100,6 +115,7 @@ func TestFanoutService_Fanout(t *testing.T) {
 			name:             "无效事件，直接返回 ErrInvalidInput",
 			event:            VideoPublishedEvent{VideoID: 1001}, // 缺少 EventID 等
 			wantErr:          ErrInvalidInput,
+			wantCountCall:    0,
 			wantAddCall:      0,
 			wantTrimCall:     0,
 			wantFollowerCall: 0,
@@ -111,6 +127,7 @@ func TestFanoutService_Fanout(t *testing.T) {
 				return []uint64{}, nil
 			},
 			wantErr:          nil,
+			wantCountCall:    1,
 			wantAddCall:      0,
 			wantTrimCall:     0,
 			wantFollowerCall: 1,
@@ -122,6 +139,7 @@ func TestFanoutService_Fanout(t *testing.T) {
 				return []uint64{1, 2, 3}, nil // 只有 3 个粉丝
 			},
 			wantErr:          nil,
+			wantCountCall:    1,
 			wantAddCall:      1,
 			wantTrimCall:     3, // 每个粉丝调用一次 Trim
 			wantFollowerCall: 1,
@@ -151,6 +169,7 @@ func TestFanoutService_Fanout(t *testing.T) {
 				}
 			}(),
 			wantErr:          nil,
+			wantCountCall:    1,
 			wantAddCall:      2, // 第一批 500，第二批 50
 			wantTrimCall:     550,
 			wantFollowerCall: 2,
@@ -163,6 +182,7 @@ func TestFanoutService_Fanout(t *testing.T) {
 				return nil, errFanoutFollowers
 			},
 			wantErr:          errFanoutFollowers,
+			wantCountCall:    1,
 			wantAddCall:      0,
 			wantTrimCall:     0,
 			wantFollowerCall: 1,
@@ -177,6 +197,7 @@ func TestFanoutService_Fanout(t *testing.T) {
 				return errFanoutAdd
 			},
 			wantErr:          errFanoutAdd,
+			wantCountCall:    1,
 			wantAddCall:      1, // Add 被调用一次（但失败了）
 			wantTrimCall:     0, // Add 失败，不应继续 Trim
 			wantFollowerCall: 1,
@@ -191,21 +212,64 @@ func TestFanoutService_Fanout(t *testing.T) {
 				return errFanoutTrim
 			},
 			wantErr:          errFanoutTrim,
+			wantCountCall:    1,
 			wantAddCall:      1,
 			wantTrimCall:     1, // 第一次 Trim 就失败，中断后续
 			wantFollowerCall: 1,
+		},
+		{
+			name:  "粉丝数达到阈值时跳过写扩散",
+			event: validEvent,
+			mockFollowerCount: func(ctx context.Context, authorID uint64) (int64, error) {
+				return 1000, nil
+			},
+			wantErr:          nil,
+			wantCountCall:    1,
+			wantAddCall:      0,
+			wantTrimCall:     0,
+			wantFollowerCall: 0,
+		},
+		{
+			name:  "粉丝数低于阈值时继续写扩散",
+			event: validEvent,
+			mockFollowerCount: func(ctx context.Context, authorID uint64) (int64, error) {
+				return 999, nil
+			},
+			mockFollowers: func(ctx context.Context, authorID, afterID uint64, limit int) ([]uint64, error) {
+				return []uint64{1, 2}, nil
+			},
+			wantErr:          nil,
+			wantCountCall:    1,
+			wantAddCall:      1,
+			wantTrimCall:     2,
+			wantFollowerCall: 1,
+		},
+		{
+			name:  "粉丝数查询失败时返回错误",
+			event: validEvent,
+			mockFollowerCount: func(ctx context.Context, authorID uint64) (int64, error) {
+				return 0, errFanoutFollowers
+			},
+			wantErr:          errFanoutFollowers,
+			wantCountCall:    1,
+			wantAddCall:      0,
+			wantTrimCall:     0,
+			wantFollowerCall: 0,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reader := &fakeFollowerReader{ListFollowerIDsFunc: tt.mockFollowers}
+			reader := &fakeFollowerReader{
+				CountFollowersFunc:  tt.mockFollowerCount,
+				ListFollowerIDsFunc: tt.mockFollowers,
+			}
 			inbox := &fakeInbox{
 				AddFunc:  tt.mockInboxAddFunc,
 				TrimFunc: tt.mockInboxTrimFunc,
 			}
 
-			svc := NewFanoutService(reader, inbox)
+			svc := NewFanoutService(reader, inbox, tt.fanoutThreshold)
 			err := svc.Fanout(context.Background(), tt.event)
 
 			// 1. 断言错误
@@ -220,6 +284,12 @@ func TestFanoutService_Fanout(t *testing.T) {
 			// 2. 断言调用次数
 			if reader.CallCount != tt.wantFollowerCall {
 				t.Errorf("expected ListFollowerIDs called %d times, got %d", tt.wantFollowerCall, reader.CallCount)
+			}
+			if reader.CountCallCount != tt.wantCountCall {
+				t.Errorf("expected CountFollowers called %d times, got %d", tt.wantCountCall, reader.CountCallCount)
+			}
+			if tt.wantCountCall > 0 && reader.LastCountAuthorID != tt.event.AuthorID {
+				t.Errorf("expected CountFollowers authorID %d, got %d", tt.event.AuthorID, reader.LastCountAuthorID)
 			}
 			if inbox.AddCallCount != tt.wantAddCall {
 				t.Errorf("expected Inbox.Add called %d times, got %d", tt.wantAddCall, inbox.AddCallCount)

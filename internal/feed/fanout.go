@@ -7,8 +7,9 @@ import (
 )
 
 const (
-	DefaultInboxMaxLen     = 1000
-	DefaultFanoutBatchSize = 500
+	DefaultInboxMaxLen             = 1000
+	DefaultFanoutBatchSize         = 500
+	DefaultFanoutFollowerThreshold = 1000
 )
 
 // VideoPublishedEvent 是视频发布后用于 Feed 写扩散的事件。
@@ -21,6 +22,7 @@ type VideoPublishedEvent struct {
 
 // FollowerReader 提供写扩散需要的粉丝 ID。
 type FollowerReader interface {
+	CountFollowers(ctx context.Context, authorID uint64) (int64, error)
 	ListFollowerIDs(
 		ctx context.Context,
 		authorID uint64,
@@ -31,17 +33,23 @@ type FollowerReader interface {
 
 // FanoutService 负责把视频发布事件写入粉丝收件箱。
 type FanoutService struct {
-	followers FollowerReader
-	inbox     Inbox
+	followers           FollowerReader
+	inbox               Inbox
+	fanoutFollowerLimit int
 }
 
 func NewFanoutService(
 	followers FollowerReader,
 	inbox Inbox,
+	fanoutFollowerLimit int,
 ) *FanoutService {
+	if fanoutFollowerLimit <= 0 {
+		fanoutFollowerLimit = DefaultFanoutFollowerThreshold
+	}
 	return &FanoutService{
-		followers: followers,
-		inbox:     inbox,
+		followers:           followers,
+		inbox:               inbox,
+		fanoutFollowerLimit: fanoutFollowerLimit,
 	}
 }
 
@@ -61,7 +69,19 @@ func (s *FanoutService) Fanout(
 		return fmt.Errorf("fanout: zero published at: %w", ErrInvalidInput)
 	}
 
-	// 2. 分页读取粉丝，避免一次性把所有粉丝加载到内存
+	// 2. 判断作者是否为大 V。
+	count, err := s.followers.CountFollowers(ctx, event.AuthorID)
+	if err != nil {
+		return fmt.Errorf("fanout: count followers: %w", err)
+	}
+
+	// 如果粉丝数达到或超过阈值，说明是大 V，直接跳过写扩散。
+	// 因为写扩散成本极高（百万粉丝需写百万次Redis），大 V 的视频留给 Feed 读取时实时拉取。
+	if count >= int64(s.fanoutFollowerLimit) {
+		return nil
+	}
+
+	// 3. 分页读取粉丝，避免一次性把所有粉丝加载到内存
 	afterID := uint64(0)
 	for {
 		if err := ctx.Err(); err != nil {

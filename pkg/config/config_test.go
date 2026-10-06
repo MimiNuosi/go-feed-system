@@ -103,6 +103,13 @@ func TestLoadRabbitMQConfig(t *testing.T) {
 	if cfg.RabbitMQ.RetryDelay != defaultRabbitMQRetryDelay {
 		t.Errorf("expected retry delay %v, got %v", defaultRabbitMQRetryDelay, cfg.RabbitMQ.RetryDelay)
 	}
+	if cfg.Feed.FanoutFollowerThreshold != defaultFanoutThreshold {
+		t.Errorf(
+			"expected fanout threshold %d, got %d",
+			defaultFanoutThreshold,
+			cfg.Feed.FanoutFollowerThreshold,
+		)
+	}
 }
 
 func TestLoadRequiresRabbitMQURL(t *testing.T) {

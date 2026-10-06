@@ -75,7 +75,11 @@ func newFeedMessaging(
 	retryConfig.Exchange = cfg.RabbitMQ.RetryExchange
 	retryProducer := rabbitmq.NewProducer(retryConfig, logger)
 
-	fanoutService := feed.NewFanoutService(followers, inbox)
+	fanoutService := feed.NewFanoutService(
+		followers,
+		inbox,
+		cfg.Feed.FanoutFollowerThreshold,
+	)
 	consumer := feed.NewRabbitConsumer(
 		consumerChannel,
 		cfg.RabbitMQ.Queue,

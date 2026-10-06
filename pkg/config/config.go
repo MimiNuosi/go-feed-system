@@ -30,6 +30,7 @@ const (
 	defaultRabbitMQRetryQueue    = "feed.fanout.video.published.retry"
 	defaultRabbitMQMaxRetries    = 3
 	defaultRabbitMQRetryDelay    = 5 * time.Second
+	defaultFanoutThreshold       = 1000
 )
 
 // Config 保存应用启动时需要的全部配置。
@@ -42,6 +43,7 @@ type Config struct {
 	Redis    RedisConfig
 	Outbox   OutboxConfig
 	RabbitMQ RabbitMQConfig
+	Feed     FeedConfig
 }
 
 type HTTPConfig struct {
@@ -89,6 +91,10 @@ type RabbitMQConfig struct {
 	RetryQueue    string
 	MaxRetries    int
 	RetryDelay    time.Duration
+}
+
+type FeedConfig struct {
+	FanoutFollowerThreshold int
 }
 
 // Load 从环境变量和默认值构造配置。
@@ -151,6 +157,12 @@ func Load() (Config, error) {
 			RetryQueue:    envOrDefault("RABBITMQ_RETRY_QUEUE", defaultRabbitMQRetryQueue),
 			MaxRetries:    envOrDefaultInt("RABBITMQ_MAX_RETRIES", defaultRabbitMQMaxRetries),
 			RetryDelay:    rabbitMQRetryDelay,
+		},
+		Feed: FeedConfig{
+			FanoutFollowerThreshold: envOrDefaultInt(
+				"FEED_FANOUT_FOLLOWER_THRESHOLD",
+				defaultFanoutThreshold,
+			),
 		},
 	}
 
@@ -236,6 +248,9 @@ func (c Config) validate() error {
 	}
 	if c.RabbitMQ.RetryDelay <= 0 {
 		return fmt.Errorf("RABBITMQ_RETRY_DELAY must be positive")
+	}
+	if c.Feed.FanoutFollowerThreshold <= 0 {
+		return fmt.Errorf("FEED_FANOUT_FOLLOWER_THRESHOLD must be positive")
 	}
 
 	return nil
