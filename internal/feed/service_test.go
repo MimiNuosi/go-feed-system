@@ -15,15 +15,19 @@ var errDBError = errors.New("database connection lost")
 
 // 1. Fake Repository
 type fakeFeedRepository struct {
-	ListFollowingFunc     func(ctx context.Context, followerID uint64, cursor *Cursor, limit int) ([]VideoRecord, error)
-	ListVisibleByIDsFunc  func(ctx context.Context, followerID uint64, videoIDs []uint64) ([]VideoRecord, error)
-	CallCount             int
-	ListVisibleCallCount  int
-	LastFollowerID        uint64
-	LastCursor            *Cursor
-	LastLimit             int
-	LastVisibleFollowerID uint64
-	LastVideoIDs          []uint64
+	ListFollowingFunc      func(ctx context.Context, followerID uint64, cursor *Cursor, limit int) ([]VideoRecord, error)
+	ListVisibleByIDsFunc   func(ctx context.Context, followerID uint64, videoIDs []uint64) ([]VideoRecord, error)
+	ListBigAuthorIDsFunc   func(ctx context.Context, followerID uint64, threshold int) ([]uint64, error)
+	ListByAuthorIDsFunc    func(ctx context.Context, authorIDs []uint64, cursor *Cursor, limit int) ([]VideoRecord, error)
+	CallCount              int
+	ListVisibleCallCount   int
+	ListBigAuthorCallCount int
+	ListByAuthorCallCount  int
+	LastFollowerID         uint64
+	LastCursor             *Cursor
+	LastLimit              int
+	LastVisibleFollowerID  uint64
+	LastVideoIDs           []uint64
 }
 
 func (f *fakeFeedRepository) ListFollowing(ctx context.Context, followerID uint64, cursor *Cursor, limit int) ([]VideoRecord, error) {
@@ -43,6 +47,31 @@ func (f *fakeFeedRepository) ListVisibleByIDs(ctx context.Context, followerID ui
 	f.LastVideoIDs = videoIDs
 	if f.ListVisibleByIDsFunc != nil {
 		return f.ListVisibleByIDsFunc(ctx, followerID, videoIDs)
+	}
+	return nil, nil
+}
+
+func (f *fakeFeedRepository) ListBigAuthorIDs(
+	ctx context.Context,
+	followerID uint64,
+	threshold int,
+) ([]uint64, error) {
+	f.ListBigAuthorCallCount++
+	if f.ListBigAuthorIDsFunc != nil {
+		return f.ListBigAuthorIDsFunc(ctx, followerID, threshold)
+	}
+	return nil, nil
+}
+
+func (f *fakeFeedRepository) ListFollowingByAuthorIDs(
+	ctx context.Context,
+	authorIDs []uint64,
+	cursor *Cursor,
+	limit int,
+) ([]VideoRecord, error) {
+	f.ListByAuthorCallCount++
+	if f.ListByAuthorIDsFunc != nil {
+		return f.ListByAuthorIDsFunc(ctx, authorIDs, cursor, limit)
 	}
 	return nil, nil
 }
@@ -293,7 +322,7 @@ func TestService_ListFollowing(t *testing.T) {
 			}
 
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-			svc := NewService(videoRepo, userReader, likeReader, nil, logger)
+			svc := NewService(videoRepo, userReader, likeReader, nil, 1000, logger)
 			page, err := svc.ListFollowing(context.Background(), tt.userID, tt.cursor, tt.pageSize)
 
 			// 1. 断言错误
@@ -366,9 +395,10 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 		inboxErr     error
 		visibleErr   error
 
-		wantIDs          []uint64
-		wantHasMore      bool
-		wantVisibleCalls int
+		wantIDs            []uint64
+		wantHasMore        bool
+		wantVisibleCalls   int
+		wantFullMySQLCalls int
 	}{
 		{
 			name:     "Redis 补充独立视频并参与排序",
@@ -380,8 +410,9 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 			pushRecords: []VideoRecord{
 				{ID: 200, AuthorID: 20, Title: "redis", CreatedAt: now},
 			},
-			wantIDs:          []uint64{200, 100},
-			wantVisibleCalls: 1,
+			wantIDs:            []uint64{200, 100},
+			wantVisibleCalls:   1,
+			wantFullMySQLCalls: 0,
 		},
 		{
 			name:     "重复视频优先保留 MySQL 数据",
@@ -393,8 +424,9 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 			pushRecords: []VideoRecord{
 				{ID: 100, AuthorID: 10, Title: "redis", CreatedAt: now},
 			},
-			wantIDs:          []uint64{100},
-			wantVisibleCalls: 1,
+			wantIDs:            []uint64{100},
+			wantVisibleCalls:   1,
+			wantFullMySQLCalls: 0,
 		},
 		{
 			name:     "第二页过滤比游标更新的 Redis 记录",
@@ -408,8 +440,9 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 				{ID: 200, AuthorID: 20, CreatedAt: now.Add(time.Minute)},
 				{ID: 130, AuthorID: 20, CreatedAt: now.Add(-2 * time.Minute)},
 			},
-			wantIDs:          []uint64{140, 130},
-			wantVisibleCalls: 1,
+			wantIDs:            []uint64{140, 130},
+			wantVisibleCalls:   1,
+			wantFullMySQLCalls: 0,
 		},
 		{
 			name:     "Redis 读取失败时降级为 MySQL",
@@ -417,8 +450,9 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 			mysqlRecords: []VideoRecord{
 				{ID: 100, AuthorID: 10, CreatedAt: now},
 			},
-			inboxErr: errDBError,
-			wantIDs:  []uint64{100},
+			inboxErr:           errDBError,
+			wantIDs:            []uint64{100},
+			wantFullMySQLCalls: 1,
 		},
 		{
 			name:     "Redis 视频元数据查询失败时降级为 MySQL",
@@ -426,10 +460,11 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 			mysqlRecords: []VideoRecord{
 				{ID: 100, AuthorID: 10, CreatedAt: now},
 			},
-			pushIDs:          []uint64{200},
-			visibleErr:       errDBError,
-			wantIDs:          []uint64{100},
-			wantVisibleCalls: 1,
+			pushIDs:            []uint64{200},
+			visibleErr:         errDBError,
+			wantIDs:            []uint64{100},
+			wantVisibleCalls:   1,
+			wantFullMySQLCalls: 1,
 		},
 		{
 			name:     "合并后仍能正确生成下一页",
@@ -442,9 +477,10 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 			pushRecords: []VideoRecord{
 				{ID: 200, AuthorID: 20, CreatedAt: now},
 			},
-			wantIDs:          []uint64{200, 100},
-			wantHasMore:      true,
-			wantVisibleCalls: 1,
+			wantIDs:            []uint64{200, 100},
+			wantHasMore:        true,
+			wantVisibleCalls:   1,
+			wantFullMySQLCalls: 0,
 		},
 	}
 
@@ -452,6 +488,12 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeFeedRepository{
 				ListFollowingFunc: func(ctx context.Context, followerID uint64, cursor *Cursor, limit int) ([]VideoRecord, error) {
+					return tt.mysqlRecords, nil
+				},
+				ListBigAuthorIDsFunc: func(ctx context.Context, followerID uint64, threshold int) ([]uint64, error) {
+					return []uint64{10}, nil
+				},
+				ListByAuthorIDsFunc: func(ctx context.Context, authorIDs []uint64, cursor *Cursor, limit int) ([]VideoRecord, error) {
 					return tt.mysqlRecords, nil
 				},
 				ListVisibleByIDsFunc: func(ctx context.Context, followerID uint64, videoIDs []uint64) ([]VideoRecord, error) {
@@ -469,6 +511,7 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 				&fakeFeedUserReader{},
 				&fakeFeedLikeReader{},
 				inbox,
+				1000,
 				logger,
 			)
 
@@ -494,6 +537,61 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 			}
 			if repo.ListVisibleCallCount != tt.wantVisibleCalls {
 				t.Errorf("expected ListVisible calls %d, got %d", tt.wantVisibleCalls, repo.ListVisibleCallCount)
+			}
+			if repo.CallCount != tt.wantFullMySQLCalls {
+				t.Errorf("expected full MySQL fallback calls %d, got %d", tt.wantFullMySQLCalls, repo.CallCount)
+			}
+			if repo.ListBigAuthorCallCount != 1 {
+				t.Errorf("expected one big author query, got %d", repo.ListBigAuthorCallCount)
+			}
+			if repo.ListByAuthorCallCount != 1 {
+				t.Errorf("expected one big author video query, got %d", repo.ListByAuthorCallCount)
+			}
+		})
+	}
+}
+
+func TestService_LoadCandidateRecords_MySQLFailures(t *testing.T) {
+	tests := []struct {
+		name         string
+		bigAuthorErr error
+		byAuthorErr  error
+		wantErr      error
+	}{
+		{
+			name:         "大 V ID 查询失败",
+			bigAuthorErr: errDBError,
+			wantErr:      errDBError,
+		},
+		{
+			name:        "大 V 视频查询失败",
+			byAuthorErr: errDBError,
+			wantErr:     errDBError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeFeedRepository{
+				ListBigAuthorIDsFunc: func(ctx context.Context, followerID uint64, threshold int) ([]uint64, error) {
+					return []uint64{10}, tt.bigAuthorErr
+				},
+				ListByAuthorIDsFunc: func(ctx context.Context, authorIDs []uint64, cursor *Cursor, limit int) ([]VideoRecord, error) {
+					return nil, tt.byAuthorErr
+				},
+			}
+			svc := NewService(
+				repo,
+				&fakeFeedUserReader{},
+				&fakeFeedLikeReader{},
+				&fakeFeedInboxReader{},
+				1000,
+				slog.New(slog.NewTextHandler(io.Discard, nil)),
+			)
+
+			_, err := svc.loadCandidateRecords(context.Background(), 1, nil, 10)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("expected error %v, got %v", tt.wantErr, err)
 			}
 		})
 	}

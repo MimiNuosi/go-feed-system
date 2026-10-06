@@ -138,7 +138,14 @@ func run() error {
 	videoHandler := video.NewHandler(videoService, likeService)
 
 	feedRepository := feed.NewGORMRepository(db)
-	feedService := feed.NewService(feedRepository, userService, likeService, redisInbox, logger)
+	feedService := feed.NewService(
+		feedRepository,
+		userService,
+		likeService,
+		redisInbox,
+		cfg.Feed.FanoutFollowerThreshold,
+		logger,
+	)
 	feedHandler := feed.NewHandler(feedService, logger)
 
 	engine := router.New(router.Dependencies{

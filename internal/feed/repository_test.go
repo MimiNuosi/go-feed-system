@@ -90,6 +90,58 @@ func createFeedSeedData(t *testing.T, tx *gorm.DB) (userA, userB, userC uint64, 
 	return uA.ID, uB.ID, uC.ID, v1.ID, v2.ID, v3.ID
 }
 
+func createBigAuthorSeedData(
+	t *testing.T,
+	tx *gorm.DB,
+) (viewerID, bigAuthorID, smallAuthorID, bigVideoNew, bigVideoOld, smallVideo uint64) {
+	t.Helper()
+
+	viewer := &user.User{Username: "viewer", Email: "viewer@example.com", PasswordHash: "hash"}
+	bigAuthor := &user.User{Username: "bigAuthor", Email: "big@example.com", PasswordHash: "hash"}
+	smallAuthor := &user.User{Username: "smallAuthor", Email: "small@example.com", PasswordHash: "hash"}
+	fan := &user.User{Username: "fan", Email: "fan@example.com", PasswordHash: "hash"}
+	for _, u := range []*user.User{viewer, bigAuthor, smallAuthor, fan} {
+		if err := tx.Create(u).Error; err != nil {
+			t.Fatalf("create seed user: %v", err)
+		}
+	}
+
+	follows := []*interaction.Follow{
+		{FollowerID: viewer.ID, FolloweeID: bigAuthor.ID},
+		{FollowerID: viewer.ID, FolloweeID: smallAuthor.ID},
+		{FollowerID: fan.ID, FolloweeID: bigAuthor.ID},
+	}
+	for _, follow := range follows {
+		if err := tx.Create(follow).Error; err != nil {
+			t.Fatalf("create seed follow: %v", err)
+		}
+	}
+
+	now := time.Now().Truncate(time.Millisecond)
+	bigNew := &video.Video{
+		AuthorID: bigAuthor.ID, Title: "big new", Description: "desc",
+		StorageKey: "test/big-new", OriginalFilename: "big-new.mp4", ContentType: "video/mp4",
+		SizeBytes: 100, Status: "ready", CreatedAt: now,
+	}
+	bigOld := &video.Video{
+		AuthorID: bigAuthor.ID, Title: "big old", Description: "desc",
+		StorageKey: "test/big-old", OriginalFilename: "big-old.mp4", ContentType: "video/mp4",
+		SizeBytes: 100, Status: "ready", CreatedAt: now.Add(-time.Hour),
+	}
+	small := &video.Video{
+		AuthorID: smallAuthor.ID, Title: "small", Description: "desc",
+		StorageKey: "test/small", OriginalFilename: "small.mp4", ContentType: "video/mp4",
+		SizeBytes: 100, Status: "ready", CreatedAt: now.Add(time.Minute),
+	}
+	for _, item := range []*video.Video{bigNew, bigOld, small} {
+		if err := tx.Create(item).Error; err != nil {
+			t.Fatalf("create seed video: %v", err)
+		}
+	}
+
+	return viewer.ID, bigAuthor.ID, smallAuthor.ID, bigNew.ID, bigOld.ID, small.ID
+}
+
 func TestGORMRepository_ListFollowing(t *testing.T) {
 	t.Run("第一页：只返回关注作者的视频，按时间与 ID 稳定降序", func(t *testing.T) {
 		tx := openTestDB(t)
@@ -201,6 +253,101 @@ func TestGORMRepository_ListVisibleByIDs(t *testing.T) {
 		records, err := repo.ListVisibleByIDs(context.Background(), 1, nil)
 		if err != nil {
 			t.Fatalf("list visible videos: %v", err)
+		}
+		if len(records) != 0 {
+			t.Fatalf("expected empty records, got %v", records)
+		}
+	})
+}
+
+func TestGORMRepository_ListBigAuthorIDs(t *testing.T) {
+	t.Run("只返回当前用户关注且达到阈值的大 V", func(t *testing.T) {
+		tx := openTestDB(t)
+		repo := NewGORMRepository(tx)
+
+		viewerID, bigAuthorID, _, _, _, _ := createBigAuthorSeedData(t, tx)
+
+		authorIDs, err := repo.ListBigAuthorIDs(context.Background(), viewerID, 2)
+		if err != nil {
+			t.Fatalf("list big author IDs: %v", err)
+		}
+		if len(authorIDs) != 1 || authorIDs[0] != bigAuthorID {
+			t.Fatalf("expected big author %d, got %v", bigAuthorID, authorIDs)
+		}
+	})
+
+	t.Run("阈值为一返回所有被关注作者", func(t *testing.T) {
+		tx := openTestDB(t)
+		repo := NewGORMRepository(tx)
+
+		viewerID, bigAuthorID, smallAuthorID, _, _, _ := createBigAuthorSeedData(t, tx)
+
+		authorIDs, err := repo.ListBigAuthorIDs(context.Background(), viewerID, 1)
+		if err != nil {
+			t.Fatalf("list big author IDs: %v", err)
+		}
+		if len(authorIDs) != 2 {
+			t.Fatalf("expected two authors, got %v", authorIDs)
+		}
+		seen := map[uint64]bool{}
+		for _, id := range authorIDs {
+			seen[id] = true
+		}
+		if !seen[bigAuthorID] || !seen[smallAuthorID] {
+			t.Fatalf("expected authors %d and %d, got %v", bigAuthorID, smallAuthorID, authorIDs)
+		}
+	})
+}
+
+func TestGORMRepository_ListFollowingByAuthorIDs(t *testing.T) {
+	t.Run("按作者查询并保持复合游标分页", func(t *testing.T) {
+		tx := openTestDB(t)
+		repo := NewGORMRepository(tx)
+
+		_, bigAuthorID, smallAuthorID, bigNewID, bigOldID, _ := createBigAuthorSeedData(t, tx)
+
+		page1, err := repo.ListFollowingByAuthorIDs(context.Background(), []uint64{bigAuthorID}, nil, 1)
+		if err != nil {
+			t.Fatalf("page1: %v", err)
+		}
+		if len(page1) != 1 || page1[0].ID != bigNewID {
+			t.Fatalf("expected page1 video %d, got %v", bigNewID, page1)
+		}
+
+		page2, err := repo.ListFollowingByAuthorIDs(
+			context.Background(),
+			[]uint64{bigAuthorID},
+			&Cursor{CreatedAt: page1[0].CreatedAt, ID: page1[0].ID},
+			10,
+		)
+		if err != nil {
+			t.Fatalf("page2: %v", err)
+		}
+		if len(page2) != 1 || page2[0].ID != bigOldID {
+			t.Fatalf("expected page2 video %d, got %v", bigOldID, page2)
+		}
+
+		smallRecords, err := repo.ListFollowingByAuthorIDs(
+			context.Background(),
+			[]uint64{smallAuthorID},
+			nil,
+			10,
+		)
+		if err != nil {
+			t.Fatalf("list small author videos: %v", err)
+		}
+		if len(smallRecords) != 1 || smallRecords[0].AuthorID != smallAuthorID {
+			t.Fatalf("expected small author video, got %v", smallRecords)
+		}
+	})
+
+	t.Run("空作者列表返回空结果", func(t *testing.T) {
+		tx := openTestDB(t)
+		repo := NewGORMRepository(tx)
+
+		records, err := repo.ListFollowingByAuthorIDs(context.Background(), nil, nil, 10)
+		if err != nil {
+			t.Fatalf("list following by authors: %v", err)
 		}
 		if len(records) != 0 {
 			t.Fatalf("expected empty records, got %v", records)

@@ -17,6 +17,13 @@ type Repository interface {
 	// 使用 (created_at, id) 复合排序，limit 由 Service 传入 pageSize+1。
 	ListFollowing(ctx context.Context, followerID uint64, cursor *Cursor, limit int) ([]VideoRecord, error)
 	ListVisibleByIDs(ctx context.Context, followerID uint64, videoIDs []uint64) ([]VideoRecord, error)
+	ListBigAuthorIDs(ctx context.Context, followerID uint64, threshold int) ([]uint64, error)
+	ListFollowingByAuthorIDs(
+		ctx context.Context,
+		authorIDs []uint64,
+		cursor *Cursor,
+		limit int,
+	) ([]VideoRecord, error)
 }
 
 type GORMRepository struct {
@@ -80,5 +87,58 @@ func (r *GORMRepository) ListVisibleByIDs(
 	if err != nil {
 		return nil, fmt.Errorf("list videos by ids: %w", err)
 	}
+	return records, nil
+}
+
+func (r *GORMRepository) ListBigAuthorIDs(
+	ctx context.Context,
+	followerID uint64,
+	threshold int,
+) ([]uint64, error) {
+	if followerID == 0 || threshold <= 0 {
+		return []uint64{}, nil
+	}
+
+	var authorIDs []uint64
+	err := r.db.WithContext(ctx).
+		Table("follows AS cf").
+		Select("cf.followee_id").
+		Joins("JOIN follows AS af ON af.followee_id = cf.followee_id").
+		Where("cf.follower_id = ?", followerID).
+		Group("cf.followee_id").
+		Having("COUNT(af.follower_id) >= ?", threshold).
+		Pluck("cf.followee_id", &authorIDs).Error
+	if err != nil {
+		return nil, fmt.Errorf("list big author ids: %w", err)
+	}
+	return authorIDs, nil
+}
+
+func (r *GORMRepository) ListFollowingByAuthorIDs(
+	ctx context.Context,
+	authorIDs []uint64,
+	cursor *Cursor,
+	limit int,
+) ([]VideoRecord, error) {
+	if len(authorIDs) == 0 || limit <= 0 {
+		return []VideoRecord{}, nil
+	}
+
+	query := r.db.WithContext(ctx).
+		Table("videos AS v").
+		Select("v.id, v.author_id, v.title, v.description, v.content_type, v.created_at").
+		Where("v.author_id IN ?", authorIDs)
+
+	if cursor != nil {
+		query = query.Where("(v.created_at, v.id) < (?, ?)", cursor.CreatedAt, cursor.ID)
+	}
+
+	query = query.Order("v.created_at DESC, v.id DESC").Limit(limit)
+
+	var records []VideoRecord
+	if err := query.Find(&records).Error; err != nil {
+		return nil, fmt.Errorf("list following by author ids: %w", err)
+	}
+
 	return records, nil
 }

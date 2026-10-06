@@ -35,11 +35,12 @@ type InboxReader interface {
 }
 
 type Service struct {
-	videos Repository
-	users  UserReader
-	likes  LikeReader
-	inbox  InboxReader
-	logger *slog.Logger
+	videos                  Repository
+	users                   UserReader
+	likes                   LikeReader
+	inbox                   InboxReader
+	fanoutFollowerThreshold int
+	logger                  *slog.Logger
 }
 
 func NewService(
@@ -47,14 +48,19 @@ func NewService(
 	users UserReader,
 	likes LikeReader,
 	inbox InboxReader,
+	fanoutFollowerThreshold int,
 	logger *slog.Logger,
 ) *Service {
+	if fanoutFollowerThreshold <= 0 {
+		fanoutFollowerThreshold = DefaultFanoutFollowerThreshold
+	}
 	return &Service{
-		videos: videos,
-		users:  users,
-		likes:  likes,
-		inbox:  inbox,
-		logger: logger,
+		videos:                  videos,
+		users:                   users,
+		likes:                   likes,
+		inbox:                   inbox,
+		fanoutFollowerThreshold: fanoutFollowerThreshold,
+		logger:                  logger,
 	}
 }
 
@@ -83,82 +89,11 @@ func (s *Service) ListFollowing(
 		logger = slog.Default()
 	}
 
-	// 3. 分别读取 MySQL 纯拉 Feed 和 Redis Inbox，然后合并。
-	//
-	// TODO(阶段 6.6)：
-	// 1. MySQL：调用 ListFollowing(ctx, userID, cursor, pageSize+1)。
-	// 2. Redis：调用 inbox.List(ctx, userID, 0, DefaultInboxMaxLen)，
-	//    读取最多 1000 个 videoID。
-	// 3. 使用 videos.ListByIDs(ctx, pushVideoIDs) 批量补充 Redis 视频元数据。
-	// 4. Redis 读取失败时记录 Warn，并降级为仅使用 MySQL records。
-	// 5. 按 video ID 去重，优先保留 MySQL 查询出的 VideoRecord。
-	// 6. 第二页及以后过滤掉不满足 (created_at, id) < (cursor) 的 Redis 记录。
-	// 7. 按 created_at DESC、id DESC 排序。
-	// 8. 再执行下面的 HasMore 裁剪、批量补充和游标生成。
-	// 3.1 查 MySQL (现有代码)
-	mysqlRecords, err := s.videos.ListFollowing(ctx, userID, cursor, pageSize+1)
+	// 3. 按读侧分流策略加载候选记录。
+	records, err := s.loadCandidateRecords(ctx, userID, cursor, pageSize+1)
 	if err != nil {
-		return nil, fmt.Errorf("list following: fetch videos: %w", err)
+		return nil, fmt.Errorf("list following: load candidates: %w", err)
 	}
-
-	// 3.2 查 Redis 收件箱
-	var pushIDs []uint64
-	if s.inbox != nil {
-		pushIDs, err = s.inbox.List(ctx, userID, 0, DefaultInboxMaxLen)
-		if err != nil {
-			// 降级处理：Redis 挂了不能影响 Feed，记录 Warn，继续使用 MySQL 结果
-			logger.Warn("feed: redis inbox failed, fallback to mysql only", "error", err)
-			pushIDs = nil
-		}
-	}
-
-	// 3.3 批量拿 Redis 视频的元数据
-	var pushRecords []VideoRecord
-	if len(pushIDs) > 0 {
-		pushRecords, err = s.videos.ListVisibleByIDs(ctx, userID, pushIDs)
-		if err != nil {
-			logger.Warn("feed: list videos by push ids failed, fallback to mysql only", "error", err)
-			pushRecords = nil // 降级
-		}
-	}
-
-	// 3.4 合并、去重、排序（核心！）
-	// 注意：Go 的 map 是无序的，所以去重可以用 map，但排序必须用 slice。
-	// 另外：MySQL 查出来的已经在 cursor 之前了，不需要再次过滤。Redis 的数据需要按 cursor 过滤。
-	mergedMap := make(map[uint64]VideoRecord)
-
-	// 优先放入 MySQL 数据（因为它是事实数据源）
-	for _, r := range mysqlRecords {
-		mergedMap[r.ID] = r
-	}
-
-	// 放入 Redis 数据（去重：如果 map 里已有，说明是重复的，跳过或保留 MySQL 版本）
-	for _, r := range pushRecords {
-		// 如果指定了 cursor，Redis 数据也要过滤
-		if cursor != nil {
-			if r.CreatedAt.After(cursor.CreatedAt) ||
-				(r.CreatedAt.Equal(cursor.CreatedAt) && r.ID >= cursor.ID) {
-				continue // 跳过比游标还新的数据
-			}
-		}
-		if _, exists := mergedMap[r.ID]; !exists {
-			mergedMap[r.ID] = r
-		}
-	}
-
-	// 把 map 转成 slice
-	var records []VideoRecord
-	for _, r := range mergedMap {
-		records = append(records, r)
-	}
-
-	// 排序：按创建时间倒序，如果时间相同按 ID 倒序
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].CreatedAt.Equal(records[j].CreatedAt) {
-			return records[i].ID > records[j].ID
-		}
-		return records[i].CreatedAt.After(records[j].CreatedAt)
-	})
 
 	// 4. 判断 HasMore 并裁剪
 	hasMore := len(records) > pageSize
@@ -263,4 +198,126 @@ func (s *Service) ListFollowing(
 		NextCursor: nextCursor,
 		HasMore:    hasMore,
 	}, nil
+}
+
+// loadCandidateRecords 按读侧分流策略加载候选视频记录。
+//
+// 返回的记录：
+//   - 已应用 cursor 过滤（第二页及以后不会返回比 cursor 新的数据）
+//   - 已去重
+//   - 已按 (created_at DESC, id DESC) 排序
+//   - 尚未裁剪到 pageSize，也未补作者信息 / 点赞状态
+//
+// limit 语义是 pageSize+1，用于上层判断 hasMore。
+func (s *Service) loadCandidateRecords(
+	ctx context.Context,
+	userID uint64,
+	cursor *Cursor,
+	limit int,
+) ([]VideoRecord, error) {
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	// 分支 A：没有 Redis 收件箱 -> 退化到纯 MySQL 拉模式
+	if s.inbox == nil {
+		return s.videos.ListFollowing(ctx, userID, cursor, limit)
+	}
+
+	// 分支 B：Redis 正常 -> 读侧分流。
+	//
+	// 顺序必须是：先查大 V（MySQL），再查 Redis。
+	// 如果先查 Redis 再查大 V 失败，已经拿到的 Redis 数据就白费了；
+	// 而且 MySQL 是事实源，Redis 是加速层，先拿事实源更符合直觉。
+	//
+	// 步骤 1：查大 V 作者 ID。
+	bigAuthorIDs, err := s.videos.ListBigAuthorIDs(ctx, userID, s.fanoutFollowerThreshold)
+	if err != nil {
+		return nil, fmt.Errorf("list following by big author ids: %w", err)
+	}
+
+	// 步骤 2：查大 V 视频。
+	mysqlRecords, err := s.videos.ListFollowingByAuthorIDs(ctx, bigAuthorIDs, cursor, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list following by big author ids: %w", err)
+	}
+
+	// 步骤 3：查 Redis 收件箱。失败时必须回退到全量 MySQL。
+	pushIDs, err := s.inbox.List(ctx, userID, 0, DefaultInboxMaxLen)
+	if err != nil {
+		logger.Warn("feed: redis inbox failed, fallback to mysql only", "error", err)
+		return s.videos.ListFollowing(ctx, userID, cursor, limit)
+	}
+
+	// 步骤 4：批量拿 Redis 视频的元数据。
+	var pushRecords []VideoRecord
+	if len(pushIDs) > 0 {
+		pushRecords, err = s.videos.ListVisibleByIDs(ctx, userID, pushIDs)
+		if err != nil {
+			logger.Warn("feed: list videos by push ids failed, fallback to mysql only", "error", err)
+			return s.videos.ListFollowing(ctx, userID, cursor, limit)
+		}
+	}
+
+	// 步骤 5：合并、去重、排序。
+	return mergeVideoRecords(mysqlRecords, pushRecords, cursor), nil
+}
+
+// mergeVideoRecords 把 MySQL 记录和 Redis 记录合并、去重、按复合游标排序。
+//
+// 这是一个纯函数：不碰 ctx、不碰 DB、不碰 Redis，容易用 Table-Driven Tests 覆盖。
+//
+// 优先级：MySQL 记录优先（它是事实源），Redis 记录遇到重复 ID 就跳过。
+// 游标过滤：两条来源都统一过滤一次，虽然 MySQL 查询已应用过 cursor，
+//
+//	但统一过滤可以保证函数本身语义完整，不依赖调用方。
+func mergeVideoRecords(
+	mysqlRecords []VideoRecord,
+	pushRecords []VideoRecord,
+	cursor *Cursor,
+) []VideoRecord {
+	mergedMap := make(map[uint64]VideoRecord)
+	for _, r := range mysqlRecords {
+		if !isBeforeCursor(r, cursor) {
+			continue
+		}
+		mergedMap[r.ID] = r
+	}
+
+	for _, r := range pushRecords {
+		if cursor != nil && !isBeforeCursor(r, cursor) {
+			continue // 跳过不满足游标的记录
+		}
+		if _, exists := mergedMap[r.ID]; !exists {
+			mergedMap[r.ID] = r
+		}
+	}
+
+	var records []VideoRecord
+	for _, r := range mergedMap {
+		records = append(records, r)
+	}
+
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].CreatedAt.Equal(records[j].CreatedAt) {
+			return records[i].ID > records[j].ID
+		}
+		return records[i].CreatedAt.After(records[j].CreatedAt)
+	})
+
+	return records
+}
+
+func isBeforeCursor(record VideoRecord, cursor *Cursor) bool {
+	if cursor == nil {
+		return true // 没有游标，所有记录都算在前面
+	}
+	if record.CreatedAt.Before(cursor.CreatedAt) {
+		return true
+	}
+	if record.CreatedAt.Equal(cursor.CreatedAt) && record.ID < cursor.ID {
+		return true
+	}
+	return false
 }
