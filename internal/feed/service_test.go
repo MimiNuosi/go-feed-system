@@ -387,13 +387,15 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 	tests := []struct {
 		name string
 
-		cursor       *Cursor
-		pageSize     int
-		mysqlRecords []VideoRecord
-		pushIDs      []uint64
-		pushRecords  []VideoRecord
-		inboxErr     error
-		visibleErr   error
+		cursor          *Cursor
+		pageSize        int
+		mysqlRecords    []VideoRecord
+		pushIDs         []uint64
+		pushRecords     []VideoRecord
+		backfillRecords []VideoRecord
+		backfillErr     error
+		inboxErr        error
+		visibleErr      error
 
 		wantIDs            []uint64
 		wantHasMore        bool
@@ -410,9 +412,12 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 			pushRecords: []VideoRecord{
 				{ID: 200, AuthorID: 20, Title: "redis", CreatedAt: now},
 			},
+			backfillRecords: []VideoRecord{
+				{ID: 100, AuthorID: 10, Title: "mysql", CreatedAt: now.Add(-time.Hour)},
+			},
 			wantIDs:            []uint64{200, 100},
 			wantVisibleCalls:   1,
-			wantFullMySQLCalls: 0,
+			wantFullMySQLCalls: 1,
 		},
 		{
 			name:     "重复视频优先保留 MySQL 数据",
@@ -424,9 +429,12 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 			pushRecords: []VideoRecord{
 				{ID: 100, AuthorID: 10, Title: "redis", CreatedAt: now},
 			},
+			backfillRecords: []VideoRecord{
+				{ID: 100, AuthorID: 10, Title: "mysql", CreatedAt: now},
+			},
 			wantIDs:            []uint64{100},
 			wantVisibleCalls:   1,
-			wantFullMySQLCalls: 0,
+			wantFullMySQLCalls: 1,
 		},
 		{
 			name:     "第二页过滤比游标更新的 Redis 记录",
@@ -442,7 +450,7 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 			},
 			wantIDs:            []uint64{140, 130},
 			wantVisibleCalls:   1,
-			wantFullMySQLCalls: 0,
+			wantFullMySQLCalls: 1,
 		},
 		{
 			name:     "Redis 读取失败时降级为 MySQL",
@@ -450,7 +458,10 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 			mysqlRecords: []VideoRecord{
 				{ID: 100, AuthorID: 10, CreatedAt: now},
 			},
-			inboxErr:           errDBError,
+			inboxErr: errDBError,
+			backfillRecords: []VideoRecord{
+				{ID: 100, AuthorID: 10, CreatedAt: now},
+			},
 			wantIDs:            []uint64{100},
 			wantFullMySQLCalls: 1,
 		},
@@ -460,8 +471,11 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 			mysqlRecords: []VideoRecord{
 				{ID: 100, AuthorID: 10, CreatedAt: now},
 			},
-			pushIDs:            []uint64{200},
-			visibleErr:         errDBError,
+			pushIDs:    []uint64{200},
+			visibleErr: errDBError,
+			backfillRecords: []VideoRecord{
+				{ID: 100, AuthorID: 10, CreatedAt: now},
+			},
 			wantIDs:            []uint64{100},
 			wantVisibleCalls:   1,
 			wantFullMySQLCalls: 1,
@@ -477,10 +491,33 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 			pushRecords: []VideoRecord{
 				{ID: 200, AuthorID: 20, CreatedAt: now},
 			},
+			backfillRecords: []VideoRecord{
+				{ID: 100, AuthorID: 10, CreatedAt: now.Add(-time.Hour)},
+				{ID: 90, AuthorID: 10, CreatedAt: now.Add(-2 * time.Hour)},
+			},
 			wantIDs:            []uint64{200, 100},
 			wantHasMore:        true,
 			wantVisibleCalls:   1,
 			wantFullMySQLCalls: 0,
+		},
+		{
+			name:     "Backfill 补充 Redis 未覆盖的历史视频",
+			pageSize: 2,
+			mysqlRecords: []VideoRecord{
+				{ID: 100, AuthorID: 10, CreatedAt: now.Add(-time.Hour)},
+			},
+			pushIDs: []uint64{200},
+			pushRecords: []VideoRecord{
+				{ID: 200, AuthorID: 20, CreatedAt: now},
+			},
+			backfillRecords: []VideoRecord{
+				{ID: 100, AuthorID: 10, CreatedAt: now.Add(-time.Hour)},
+				{ID: 90, AuthorID: 10, CreatedAt: now.Add(-2 * time.Hour)},
+			},
+			wantIDs:            []uint64{200, 100},
+			wantHasMore:        true,
+			wantVisibleCalls:   1,
+			wantFullMySQLCalls: 1,
 		},
 	}
 
@@ -488,7 +525,7 @@ func TestService_ListFollowing_MergeInbox(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeFeedRepository{
 				ListFollowingFunc: func(ctx context.Context, followerID uint64, cursor *Cursor, limit int) ([]VideoRecord, error) {
-					return tt.mysqlRecords, nil
+					return tt.backfillRecords, tt.backfillErr
 				},
 				ListBigAuthorIDsFunc: func(ctx context.Context, followerID uint64, threshold int) ([]uint64, error) {
 					return []uint64{10}, nil
@@ -594,5 +631,32 @@ func TestService_LoadCandidateRecords_MySQLFailures(t *testing.T) {
 				t.Fatalf("expected error %v, got %v", tt.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestService_LoadCandidateRecords_BackfillFailure(t *testing.T) {
+	repo := &fakeFeedRepository{
+		ListBigAuthorIDsFunc: func(ctx context.Context, followerID uint64, threshold int) ([]uint64, error) {
+			return []uint64{10}, nil
+		},
+		ListByAuthorIDsFunc: func(ctx context.Context, authorIDs []uint64, cursor *Cursor, limit int) ([]VideoRecord, error) {
+			return []VideoRecord{{ID: 100, AuthorID: 10, CreatedAt: time.Now()}}, nil
+		},
+		ListFollowingFunc: func(ctx context.Context, followerID uint64, cursor *Cursor, limit int) ([]VideoRecord, error) {
+			return nil, errDBError
+		},
+	}
+	svc := NewService(
+		repo,
+		&fakeFeedUserReader{},
+		&fakeFeedLikeReader{},
+		&fakeFeedInboxReader{},
+		1000,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+
+	_, err := svc.loadCandidateRecords(context.Background(), 1, nil, 10)
+	if !errors.Is(err, errDBError) {
+		t.Fatalf("expected backfill error, got %v", err)
 	}
 }

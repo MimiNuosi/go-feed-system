@@ -261,7 +261,33 @@ func (s *Service) loadCandidateRecords(
 	}
 
 	// 步骤 5：合并、去重、排序。
-	return mergeVideoRecords(mysqlRecords, pushRecords, cursor), nil
+	records := mergeVideoRecords(mysqlRecords, pushRecords, cursor)
+
+	// 步骤 6：Redis 数据不足时，从 MySQL 补充普通作者历史。
+	return s.backfillFromMySQL(ctx, userID, cursor, limit, records)
+}
+
+// backfillFromMySQL 在 Redis 数据不足以填满当前页时补充 MySQL 历史。
+//
+// limit 是 pageSize+1。Redis 故障的直接降级路径不会调用这个方法，
+// 因为 loadCandidateRecords 已经在 Redis 错误分支直接返回了全量 MySQL 结果。
+func (s *Service) backfillFromMySQL(
+	ctx context.Context,
+	userID uint64,
+	cursor *Cursor,
+	limit int,
+	records []VideoRecord,
+) ([]VideoRecord, error) {
+	if len(records) >= limit {
+		return records, nil
+	}
+
+	mysqlRecords, err := s.videos.ListFollowing(ctx, userID, cursor, limit)
+	if err != nil {
+		return nil, fmt.Errorf("feed: mysql backfill: %w", err)
+	}
+
+	return mergeVideoRecords(mysqlRecords, records, cursor), nil
 }
 
 // mergeVideoRecords 把 MySQL 记录和 Redis 记录合并、去重、按复合游标排序。
