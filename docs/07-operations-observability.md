@@ -140,6 +140,17 @@ deploy/prometheus/alerts.yml
 当前告警覆盖 API 不可用、Consumer 断线、Consumer 频繁重连、Outbox 发布失败、
 Outbox 发布状态写回失败、DLQ 新增消息、HTTP 5xx 比例和 HTTP P95 延迟。
 
+Grafana provisioning 和 Dashboard：
+
+```text
+deploy/grafana/provisioning/datasources/prometheus.yml
+deploy/grafana/provisioning/dashboards/dashboards.yml
+deploy/grafana/dashboards/go-feed-system.json
+```
+
+第一版 Dashboard 覆盖 API 状态、Consumer 连接、HTTP 请求量、P95 延迟、5xx 比例、
+Consumer 重连、Outbox 发布和 DLQ。
+
 HTTP 路由标签使用 Gin 路由模板：
 
 ```text
@@ -195,10 +206,10 @@ API        8080
 - [x] 完整依赖环境人工验证。
 - [x] `go test ./...`、`go vet ./...`、格式检查通过。
 - [x] Prometheus 本地抓取配置和基础告警规则。
+- [x] Grafana 数据源和 Dashboard provisioning。
 
 待完成：
 
-- [ ] Grafana 面板。
 - [ ] Docker Compose 与 CI。
 
 ## 面试追问
