@@ -1,4 +1,4 @@
-# 阶段 6：Feed 写扩散与推拉结合
+# 阶段 6：Feed 写扩散、推拉结合与可靠性
 
 ## 目标
 
@@ -12,6 +12,39 @@
 6. 大 V 读时拉取与推拉结果合并。
 
 每一阶段都必须保留纯拉模式作为降级路径。
+
+## 当前完成情况
+
+已完成：
+
+- [x] Redis Feed Inbox 与 ZSET 稳定排序。
+- [x] FollowRepository 粉丝分页。
+- [x] FanoutService 与 Fake 测试。
+- [x] MySQL 事务 Outbox。
+- [x] RabbitMQ Producer Publisher Confirm。
+- [x] RabbitMQ Consumer 手动 ACK。
+- [x] Retry Exchange、TTL Retry Queue、DLX 和 DLQ。
+- [x] 临时错误有限重试，永久错误直接进入 DLQ。
+- [x] 大 V 跳过写扩散，改由读取时从 MySQL 拉取。
+- [x] 推拉结果合并、去重和 `(created_at, id)` 稳定排序。
+- [x] Redis 数据不足时从 MySQL 回填。
+- [x] Redis 故障时回退到纯 MySQL 拉模式。
+- [x] 大 V 作者分类 Redis 缓存及关注关系变更失效。
+- [x] Consumer Supervisor 自动重连。
+- [x] 独立 RabbitMQ Consumer Connector。
+- [x] 连接故障注入和恢复集成测试。
+- [x] DLQ 查询与重放 CLI。
+- [x] Consumer、Outbox、DLQ 和 HTTP Prometheus 指标。
+
+待完成：
+
+- [ ] Feed Inbox 重建工具核心逻辑。
+
+运维、健康检查、重连、DLQ 和指标细节见：
+
+```text
+docs/07-operations-observability.md
+```
 
 ## 推拉模型
 
@@ -79,13 +112,17 @@ ZREMRANGEBYRANK
 
 ## 当前任务
 
-1. 完成 `Inbox` 接口与 Redis ZSET 实现。
-2. 给 FollowRepository 增加分页 `ListFollowerIDs`。
-3. 完成 FanoutService 和 Fake 测试。
-4. 增加 outbox 表和后台 publisher。
-5. 接入 RabbitMQ producer 和 consumer。
-6. 增加 DLQ、重试和幂等测试。
-7. 最后实现大 V 拉取和推拉合并。
+1. [x] 完成 `Inbox` 接口与 Redis ZSET 实现。
+2. [x] 给 FollowRepository 增加分页 `ListFollowerIDs`。
+3. [x] 完成 FanoutService 和 Fake 测试。
+4. [x] 增加 outbox 表和后台 publisher。
+5. [x] 接入 RabbitMQ producer 和 consumer。
+6. [x] 增加 DLQ、重试和幂等测试。
+7. [x] 实现大 V 拉取和推拉合并。
+8. [x] 增加 Consumer Supervisor 和断线恢复。
+9. [x] 增加 DLQ 运维工具。
+10. [x] 增加健康检查分层和 Prometheus 指标。
+11. [ ] 实现 Feed Inbox 重建工具。
 
 ## 面试追问
 
@@ -95,3 +132,6 @@ ZREMRANGEBYRANK
 4. 大 V 为什么不适合全量写扩散？
 5. Redis 不可用时 Feed 如何降级？
 6. RabbitMQ 重复消费时写扩散为什么仍然正确？
+7. Consumer 断线后为什么不需要重启整个 API？
+8. DLQ 重放为什么必须先发布成功再 ACK？
+9. 为什么指标标签不能使用真实视频 ID？
