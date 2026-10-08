@@ -210,7 +210,7 @@ API        8080
 
 待完成：
 
-- [ ] Docker Compose 与 CI。
+- [ ] 交付、Docker Compose 与 CI，见 `docs/08-delivery-and-ci.md`。
 
 ## 面试追问
 
