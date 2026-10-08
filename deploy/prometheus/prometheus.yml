@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    service: go-feed-system
+    environment: local
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: go-feed-system-api
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - 127.0.0.1:8080

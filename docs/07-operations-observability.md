@@ -130,6 +130,16 @@ feed_consumer_dlq_total
 outbox_publish_total
 ```
 
+Prometheus 配置：
+
+```text
+deploy/prometheus/prometheus.yml
+deploy/prometheus/alerts.yml
+```
+
+当前告警覆盖 API 不可用、Consumer 断线、Consumer 频繁重连、Outbox 发布失败、
+Outbox 发布状态写回失败、DLQ 新增消息、HTTP 5xx 比例和 HTTP P95 延迟。
+
 HTTP 路由标签使用 Gin 路由模板：
 
 ```text
@@ -184,11 +194,10 @@ API        8080
 - [x] HTTP、Consumer、DLQ、Outbox Prometheus 指标。
 - [x] 完整依赖环境人工验证。
 - [x] `go test ./...`、`go vet ./...`、格式检查通过。
+- [x] Prometheus 本地抓取配置和基础告警规则。
 
 待完成：
 
-- [ ] Feed Inbox 重建工具核心逻辑。
-- [ ] Prometheus 本地抓取配置和告警规则。
 - [ ] Grafana 面板。
 - [ ] Docker Compose 与 CI。
 

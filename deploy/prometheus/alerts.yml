@@ -1,0 +1,90 @@
+groups:
+  - name: go-feed-system
+    rules:
+      - alert: APIDown
+        expr: up{job="go-feed-system-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Go Feed API is unavailable
+          description: Prometheus cannot scrape the Go Feed API.
+
+      - alert: FeedConsumerDisconnected
+        expr: max(feed_consumer_connected) == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Feed consumer is disconnected
+          description: The Feed consumer has had no active RabbitMQ session for 5 minutes.
+
+      - alert: FeedConsumerReconnectFlapping
+        expr: |
+          sum(
+            increase(
+              feed_consumer_reconnect_total{result=~"connect_error|session_exit"}[10m]
+            )
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Feed consumer is reconnecting repeatedly
+          description: More than five consumer connection failures or session exits occurred in 10 minutes.
+
+      - alert: OutboxPublishFailures
+        expr: sum(increase(outbox_publish_total{result="error"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Outbox publishing is failing
+          description: RabbitMQ publishing failed for at least one Outbox event in the last 5 minutes.
+
+      - alert: OutboxMarkPublishedFailures
+        expr: sum(increase(outbox_publish_total{result="mark_error"}[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Outbox published state update failed
+          description: At least one event was published to RabbitMQ but could not be marked published in MySQL.
+
+      - alert: DLQMessagesDetected
+        expr: sum(increase(feed_consumer_dlq_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Feed messages entered the DLQ
+          description: At least one Feed message was dead-lettered in the last 5 minutes.
+
+      - alert: HighHTTP5xxRate
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(http_requests_total[5m])), 0.001)
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: HTTP 5xx rate is high
+          description: More than 5 percent of HTTP requests returned 5xx responses for 10 minutes.
+
+      - alert: HighHTTPP95Latency
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(http_request_duration_seconds_bucket[5m])
+            )
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: HTTP P95 latency is high
+          description: HTTP request P95 latency has exceeded 500 milliseconds for 10 minutes.
