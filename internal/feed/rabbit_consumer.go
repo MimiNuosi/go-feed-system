@@ -40,6 +40,11 @@ type RetryMessagePublisher interface {
 	Publish(ctx context.Context, message rabbitmq.Message) error
 }
 
+// ConsumerMetrics 是 Feed Consumer 需要的窄指标接口。
+type ConsumerMetrics interface {
+	IncDLQMessage(reason string)
+}
+
 // RabbitConsumer 从 RabbitMQ 队列消费视频发布事件。
 type RabbitConsumer struct {
 	channel        *amqp.Channel
@@ -48,6 +53,7 @@ type RabbitConsumer struct {
 	retryPublisher RetryMessagePublisher
 	maxRetries     int
 	logger         *slog.Logger
+	metrics        ConsumerMetrics
 }
 
 func NewRabbitConsumer(
@@ -57,6 +63,7 @@ func NewRabbitConsumer(
 	retryPublisher RetryMessagePublisher,
 	maxRetries int,
 	logger *slog.Logger,
+	metrics ConsumerMetrics,
 ) *RabbitConsumer {
 	return &RabbitConsumer{
 		channel:        channel,
@@ -65,6 +72,7 @@ func NewRabbitConsumer(
 		retryPublisher: retryPublisher,
 		maxRetries:     maxRetries,
 		logger:         logger,
+		metrics:        metrics,
 	}
 }
 
@@ -113,13 +121,13 @@ func (c *RabbitConsumer) handleDelivery(ctx context.Context, delivery amqp.Deliv
 			"type", delivery.Type,
 			"message_id", delivery.MessageId,
 		)
-		c.nack(delivery, false)
+		c.deadLetter(delivery, "invalid_type")
 		return
 	}
 
 	if delivery.MessageId == "" {
 		c.logger.Error("consume feed events: missing message ID")
-		c.nack(delivery, false)
+		c.deadLetter(delivery, "missing_message_id")
 		return
 	}
 
@@ -129,7 +137,7 @@ func (c *RabbitConsumer) handleDelivery(ctx context.Context, delivery amqp.Deliv
 			"message_id", delivery.MessageId,
 			"error", err,
 		)
-		c.nack(delivery, false)
+		c.deadLetter(delivery, "invalid_json")
 		return
 	}
 
@@ -140,7 +148,7 @@ func (c *RabbitConsumer) handleDelivery(ctx context.Context, delivery amqp.Deliv
 			"author_id", msg.AuthorID,
 			"published_at", msg.PublishedAt,
 		)
-		c.nack(delivery, false)
+		c.deadLetter(delivery, "invalid_content")
 		return
 	}
 
@@ -165,7 +173,7 @@ func (c *RabbitConsumer) handleDelivery(ctx context.Context, delivery amqp.Deliv
 				"message_id", delivery.MessageId,
 				"error", err,
 			)
-			c.nack(delivery, false)
+			c.deadLetter(delivery, "permanent_error")
 			return
 		}
 		c.retryOrDeadLetter(ctx, delivery, err)
@@ -193,7 +201,7 @@ func (c *RabbitConsumer) retryOrDeadLetter(
 			"max_retries", c.maxRetries,
 			"error", fanoutErr,
 		)
-		c.nack(delivery, false)
+		c.deadLetter(delivery, "max_retries")
 		return
 	}
 
@@ -260,5 +268,20 @@ func (c *RabbitConsumer) nack(delivery amqp.Delivery, requeue bool) {
 			"requeue", requeue,
 			"error", err,
 		)
+	}
+}
+
+func (c *RabbitConsumer) deadLetter(delivery amqp.Delivery, reason string) {
+	if err := delivery.Nack(false, false); err != nil {
+		c.logger.Error("consume feed events: failed to dead-letter message",
+			"message_id", delivery.MessageId,
+			"reason", reason,
+			"error", err,
+		)
+		return
+	}
+
+	if c.metrics != nil {
+		c.metrics.IncDLQMessage(reason)
 	}
 }

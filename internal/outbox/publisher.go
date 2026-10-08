@@ -16,12 +16,18 @@ type EventPublisher interface {
 	Publish(ctx context.Context, event Event) error
 }
 
+// PublishMetrics 是 Outbox 发布阶段需要的窄指标接口。
+type PublishMetrics interface {
+	IncOutboxPublish(result string)
+}
+
 // Publisher 负责把数据库中待发送的 Outbox 事件投递给消息系统。
 type Publisher struct {
 	repository Repository
 	publisher  EventPublisher
 	batchSize  int
 	logger     *slog.Logger
+	metrics    PublishMetrics
 }
 
 func NewPublisher(
@@ -29,6 +35,7 @@ func NewPublisher(
 	publisher EventPublisher,
 	batchSize int,
 	logger *slog.Logger,
+	metrics PublishMetrics,
 ) *Publisher {
 	if batchSize <= 0 {
 		batchSize = DefaultPublishBatchSize
@@ -39,6 +46,7 @@ func NewPublisher(
 		publisher:  publisher,
 		batchSize:  batchSize,
 		logger:     logger,
+		metrics:    metrics,
 	}
 }
 
@@ -62,6 +70,8 @@ func (p *Publisher) PublishPending(ctx context.Context) (int, error) {
 
 		// 2.1 调用事件发布器（MVP 阶段是 Fake/日志，未来是 RabbitMQ）
 		if err := p.publisher.Publish(ctx, event); err != nil {
+			p.incPublishMetric("error")
+
 			// 2.2 发布失败：记录重试次数
 			// 注意：IncrementRetry 使用 SQL 原子自增，并发安全
 			if retryErr := p.repository.IncrementRetry(ctx, event.ID, err.Error()); retryErr != nil {
@@ -86,6 +96,8 @@ func (p *Publisher) PublishPending(ctx context.Context) (int, error) {
 
 		// 2.3 发布成功：标记为 published
 		if err := p.repository.MarkPublished(ctx, event.ID, time.Now()); err != nil {
+			p.incPublishMetric("mark_error")
+
 			// 发送成功但标记失败，这是一个非常危险的中间态。
 			// 下次轮询还会把这条事件当成 pending 重新发送。
 			// 我们只能记录日志并返回错误，让上层感知到异常。
@@ -96,9 +108,16 @@ func (p *Publisher) PublishPending(ctx context.Context) (int, error) {
 			return publishedCount, fmt.Errorf("publish pending: mark published %s: %w", event.EventID, err)
 		}
 
+		p.incPublishMetric("success")
 		publishedCount++
 	}
 
 	// 3. 返回成功处理的数量
 	return publishedCount, nil
+}
+
+func (p *Publisher) incPublishMetric(result string) {
+	if p.metrics != nil {
+		p.metrics.IncOutboxPublish(result)
+	}
 }

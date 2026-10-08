@@ -66,6 +66,14 @@ type fakeRetryPublisher struct {
 	last      rabbitmq.Message
 }
 
+type fakeConsumerMetrics struct {
+	dlqReasons []string
+}
+
+func (f *fakeConsumerMetrics) IncDLQMessage(reason string) {
+	f.dlqReasons = append(f.dlqReasons, reason)
+}
+
 func (f *fakeRetryPublisher) Publish(ctx context.Context, message rabbitmq.Message) error {
 	f.callCount++
 	f.last = message
@@ -111,6 +119,7 @@ func TestRabbitConsumer_HandleDelivery(t *testing.T) {
 		wantAck         bool
 		wantNack        bool
 		wantRequeue     bool
+		wantDLQReason   string
 	}{
 		{
 			name:            "有效消息处理成功后 ACK",
@@ -123,39 +132,43 @@ func TestRabbitConsumer_HandleDelivery(t *testing.T) {
 			wantAck:         true,
 		},
 		{
-			name:        "消息类型错误时进入 DLQ",
-			messageType: "unknown.event",
-			messageID:   "event-2",
-			body:        validBody,
-			ctx:         background,
-			maxRetries:  3,
-			wantNack:    true,
+			name:          "消息类型错误时进入 DLQ",
+			messageType:   "unknown.event",
+			messageID:     "event-2",
+			body:          validBody,
+			ctx:           background,
+			maxRetries:    3,
+			wantNack:      true,
+			wantDLQReason: "invalid_type",
 		},
 		{
-			name:        "缺少 MessageID 时进入 DLQ",
-			messageType: videoPublishedMessageType,
-			body:        validBody,
-			ctx:         background,
-			maxRetries:  3,
-			wantNack:    true,
+			name:          "缺少 MessageID 时进入 DLQ",
+			messageType:   videoPublishedMessageType,
+			body:          validBody,
+			ctx:           background,
+			maxRetries:    3,
+			wantNack:      true,
+			wantDLQReason: "missing_message_id",
 		},
 		{
-			name:        "JSON 格式错误时进入 DLQ",
-			messageType: videoPublishedMessageType,
-			messageID:   "event-3",
-			body:        []byte(`{`),
-			ctx:         background,
-			maxRetries:  3,
-			wantNack:    true,
+			name:          "JSON 格式错误时进入 DLQ",
+			messageType:   videoPublishedMessageType,
+			messageID:     "event-3",
+			body:          []byte(`{`),
+			ctx:           background,
+			maxRetries:    3,
+			wantNack:      true,
+			wantDLQReason: "invalid_json",
 		},
 		{
-			name:        "消息内容非法时进入 DLQ",
-			messageType: videoPublishedMessageType,
-			messageID:   "event-4",
-			body:        invalidBody,
-			ctx:         background,
-			maxRetries:  3,
-			wantNack:    true,
+			name:          "消息内容非法时进入 DLQ",
+			messageType:   videoPublishedMessageType,
+			messageID:     "event-4",
+			body:          invalidBody,
+			ctx:           background,
+			maxRetries:    3,
+			wantNack:      true,
+			wantDLQReason: "invalid_content",
 		},
 		{
 			name:            "Fanout 临时失败时发布重试并 ACK",
@@ -181,6 +194,7 @@ func TestRabbitConsumer_HandleDelivery(t *testing.T) {
 			maxRetries:      3,
 			wantFanoutCalls: 1,
 			wantNack:        true,
+			wantDLQReason:   "max_retries",
 		},
 		{
 			name:            "Fanout 永久错误时直接进入 DLQ",
@@ -192,6 +206,7 @@ func TestRabbitConsumer_HandleDelivery(t *testing.T) {
 			maxRetries:      3,
 			wantFanoutCalls: 1,
 			wantNack:        true,
+			wantDLQReason:   "permanent_error",
 		},
 		{
 			name:            "context 取消时重新入队",
@@ -212,6 +227,7 @@ func TestRabbitConsumer_HandleDelivery(t *testing.T) {
 			ack := &fakeAcknowledger{}
 			fanout := &fakeFanoutHandler{err: tt.fanoutErr}
 			retryPublisher := &fakeRetryPublisher{}
+			metrics := &fakeConsumerMetrics{}
 			consumer := NewRabbitConsumer(
 				nil,
 				"",
@@ -219,6 +235,7 @@ func TestRabbitConsumer_HandleDelivery(t *testing.T) {
 				retryPublisher,
 				tt.maxRetries,
 				newDiscardLogger(),
+				metrics,
 			)
 
 			delivery := amqp.Delivery{
@@ -276,6 +293,13 @@ func TestRabbitConsumer_HandleDelivery(t *testing.T) {
 			}
 			if got.multiple {
 				t.Error("expected multiple=false")
+			}
+			if tt.wantDLQReason == "" {
+				if len(metrics.dlqReasons) != 0 {
+					t.Errorf("expected no DLQ metric, got %v", metrics.dlqReasons)
+				}
+			} else if len(metrics.dlqReasons) != 1 || metrics.dlqReasons[0] != tt.wantDLQReason {
+				t.Errorf("expected DLQ reason %q, got %v", tt.wantDLQReason, metrics.dlqReasons)
 			}
 		})
 	}
@@ -362,6 +386,7 @@ func TestRabbitConsumer_ConsumeIntegration(t *testing.T) {
 		&fakeRetryPublisher{},
 		cfg.MaxRetries,
 		newDiscardLogger(),
+		nil,
 	)
 
 	errCh := make(chan error, 1)
@@ -507,6 +532,7 @@ func TestRabbitConsumer_RetryIntegration(t *testing.T) {
 		retryProducer,
 		cfg.MaxRetries,
 		newDiscardLogger(),
+		nil,
 	)
 
 	errCh := make(chan error, 1)

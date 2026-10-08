@@ -137,7 +137,7 @@ func newTestEngine(
 ) *gin.Engine {
 	return New(Dependencies{
 		Logger:                 logger,
-		HealthHandler:          health.NewHandler("test-version"),
+		HealthHandler:          health.NewHandler("test-version", logger),
 		UserHandler:            user.NewHandler(nil),
 		AuthMiddleware:         authMiddleware,
 		OptionalAuthMiddleware: optionalAuthMiddleware,
@@ -171,6 +171,31 @@ func TestMethodNotAllowed(t *testing.T) {
 			t.Errorf("expected 'Allow' header 'GET', got '%s'", w.Header().Get("Allow"))
 		}
 	})
+}
+
+func TestMetricsRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	engine := New(Dependencies{
+		Logger:        logger,
+		HealthHandler: health.NewHandler("test-version", logger),
+		MetricsHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("metrics-body"))
+		}),
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", response.Code)
+	}
+	if response.Body.String() != "metrics-body" {
+		t.Fatalf("expected metrics body, got %q", response.Body.String())
+	}
 }
 
 func TestLikeRoutes(t *testing.T) {
@@ -390,7 +415,7 @@ func TestRouter_FeedFollowing(t *testing.T) {
 	t.Run("未登录访问 Feed 返回 401", func(t *testing.T) {
 		engine := New(Dependencies{
 			Logger:                 logger,
-			HealthHandler:          health.NewHandler("test"),
+			HealthHandler:          health.NewHandler("test", logger),
 			AuthMiddleware:         middleware.Auth(nil, logger),
 			OptionalAuthMiddleware: middleware.OptionalAuth(nil, logger),
 			FeedHandler:            feedHandler,
@@ -413,7 +438,7 @@ func TestRouter_FeedFollowing(t *testing.T) {
 		}
 		engine := New(Dependencies{
 			Logger:                 logger,
-			HealthHandler:          health.NewHandler("test"),
+			HealthHandler:          health.NewHandler("test", logger),
 			AuthMiddleware:         authMiddleware,
 			OptionalAuthMiddleware: func(c *gin.Context) { c.Next() },
 			FeedHandler:            feedHandler,

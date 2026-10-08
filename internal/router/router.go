@@ -2,6 +2,7 @@ package router
 
 import (
 	"log/slog"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 
@@ -15,6 +16,8 @@ import (
 
 type Dependencies struct {
 	Logger                 *slog.Logger
+	Metrics                middleware.HTTPMetrics
+	MetricsHandler         http.Handler
 	HealthHandler          *health.Handler
 	UserHandler            *user.Handler
 	AuthMiddleware         gin.HandlerFunc
@@ -35,11 +38,15 @@ func New(deps Dependencies) *gin.Engine {
 	engine.HandleMethodNotAllowed = true
 	engine.Use(middleware.RequestID(deps.Logger))
 	engine.Use(middleware.AccessLog(deps.Logger))
+	engine.Use(middleware.Metrics(deps.Metrics))
 	engine.Use(middleware.Recovery(deps.Logger))
 
 	// 基础设施探针不放进 /api/v1，避免业务版本升级影响运维配置。
 	engine.GET("/livez", deps.HealthHandler.Live)
 	engine.GET("/readyz", deps.HealthHandler.Ready)
+	if deps.MetricsHandler != nil {
+		engine.GET("/metrics", gin.WrapH(deps.MetricsHandler))
+	}
 	engine.GET(
 		"/api/v1/videos/:id",
 		deps.OptionalAuthMiddleware,

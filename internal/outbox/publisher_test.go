@@ -71,6 +71,14 @@ type fakeEventPublisher struct {
 	published     []Event
 }
 
+type fakePublishMetrics struct {
+	results []string
+}
+
+func (f *fakePublishMetrics) IncOutboxPublish(result string) {
+	f.results = append(f.results, result)
+}
+
 func (f *fakeEventPublisher) Publish(ctx context.Context, event Event) error {
 	f.published = append(f.published, event)
 	if f.publishErrors != nil {
@@ -197,7 +205,7 @@ func TestPublisher_PublishPending(t *testing.T) {
 				publishErrors: tt.publishErrors,
 			}
 
-			publisher := NewPublisher(repository, eventPublisher, 3, newDiscardLogger())
+			publisher := NewPublisher(repository, eventPublisher, 3, newDiscardLogger(), nil)
 			gotCount, err := publisher.PublishPending(context.Background())
 
 			if !errors.Is(err, tt.wantErr) {
@@ -247,7 +255,7 @@ func TestPublisher_PublishPending_RetryFailureDoesNotMaskPublishError(t *testing
 		},
 	}
 
-	publisher := NewPublisher(repository, eventPublisher, 10, newDiscardLogger())
+	publisher := NewPublisher(repository, eventPublisher, 10, newDiscardLogger(), nil)
 	count, err := publisher.PublishPending(context.Background())
 
 	if count != 0 {
@@ -273,7 +281,7 @@ func TestPublisher_PublishPending_ContextCanceled(t *testing.T) {
 	}
 	eventPublisher := &fakeEventPublisher{}
 
-	publisher := NewPublisher(repository, eventPublisher, 10, newDiscardLogger())
+	publisher := NewPublisher(repository, eventPublisher, 10, newDiscardLogger(), nil)
 	count, err := publisher.PublishPending(ctx)
 
 	if count != 0 {
@@ -287,5 +295,35 @@ func TestPublisher_PublishPending_ContextCanceled(t *testing.T) {
 	}
 	if len(repository.retryCalls) != 0 {
 		t.Errorf("expected no retry calls after cancellation, got %d", len(repository.retryCalls))
+	}
+}
+
+func TestPublisher_PublishPending_RecordsMetrics(t *testing.T) {
+	repository := &fakeOutboxRepository{
+		events: []Event{
+			{ID: 1, EventID: "event-1"},
+			{ID: 2, EventID: "event-2"},
+		},
+	}
+	eventPublisher := &fakeEventPublisher{
+		publishErrors: map[uint64]error{
+			2: errEventPublish,
+		},
+	}
+	metrics := &fakePublishMetrics{}
+	publisher := NewPublisher(repository, eventPublisher, 10, newDiscardLogger(), metrics)
+
+	if _, err := publisher.PublishPending(context.Background()); !errors.Is(err, errEventPublish) {
+		t.Fatalf("expected publish error, got %v", err)
+	}
+
+	want := []string{"success", "error"}
+	if len(metrics.results) != len(want) {
+		t.Fatalf("expected results %v, got %v", want, metrics.results)
+	}
+	for i := range want {
+		if metrics.results[i] != want[i] {
+			t.Fatalf("expected results %v, got %v", want, metrics.results)
+		}
 	}
 }
