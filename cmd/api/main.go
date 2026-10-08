@@ -21,6 +21,7 @@ import (
 	"go-feed-system/internal/video"
 	"go-feed-system/pkg/config"
 	"go-feed-system/pkg/database"
+	"go-feed-system/pkg/metrics"
 	"go-feed-system/pkg/password"
 	"go-feed-system/pkg/redis"
 	"go-feed-system/pkg/storage/local"
@@ -49,6 +50,7 @@ func run() error {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
+	appMetrics := metrics.New()
 
 	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelStartup()
@@ -120,11 +122,11 @@ func run() error {
 	followHandler := interaction.NewFollowHandler(followService, logger)
 
 	messaging, err := newFeedMessaging(
-		startupCtx,
 		cfg,
 		outboxRepository,
 		redisInbox,
 		followRepository,
+		appMetrics,
 		logger,
 	)
 	if err != nil {
@@ -159,8 +161,36 @@ func run() error {
 	feedHandler := feed.NewHandler(feedService, logger)
 
 	engine := router.New(router.Dependencies{
-		Logger:                 logger,
-		HealthHandler:          health.NewHandler(version),
+		Logger:         logger,
+		Metrics:        appMetrics,
+		MetricsHandler: appMetrics.Handler(),
+		HealthHandler: health.NewHandler(
+			version,
+			logger,
+			health.Dependency{
+				Name:     "mysql",
+				Critical: true,
+				Check: func(ctx context.Context) error {
+					sqlDB, err := db.DB()
+					if err != nil {
+						return err
+					}
+					return sqlDB.PingContext(ctx)
+				},
+			},
+			health.Dependency{
+				Name:     "redis",
+				Critical: false,
+				Check: func(ctx context.Context) error {
+					return redisClient.Ping(ctx).Err()
+				},
+			},
+			health.Dependency{
+				Name:     "rabbitmq",
+				Critical: false,
+				Check:    messaging.Ready,
+			},
+		),
 		UserHandler:            userHandler,
 		AuthMiddleware:         middleware.Auth(tokenManager, logger),
 		OptionalAuthMiddleware: middleware.OptionalAuth(tokenManager, logger),

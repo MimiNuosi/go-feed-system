@@ -5,19 +5,34 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"go-feed-system/internal/feed"
+	"go-feed-system/internal/outbox"
+	"go-feed-system/pkg/config"
 )
 
 var (
-	errTestConsumer = errors.New("consumer failed")
-	errTestWorker   = errors.New("worker failed")
+	errTestSupervisor = errors.New("supervisor failed")
+	errTestWorker     = errors.New("worker failed")
 )
 
-type fakeFeedConsumerRunner struct {
-	run func(ctx context.Context) error
+type fakeConsumerSupervisorRunner struct {
+	run        func(ctx context.Context) error
+	readyErr   error
+	closeCount int
 }
 
-func (f *fakeFeedConsumerRunner) Consume(ctx context.Context) error {
+func (f *fakeConsumerSupervisorRunner) Run(ctx context.Context) error {
 	return f.run(ctx)
+}
+
+func (f *fakeConsumerSupervisorRunner) Ready(ctx context.Context) error {
+	return f.readyErr
+}
+
+func (f *fakeConsumerSupervisorRunner) Close() error {
+	f.closeCount++
+	return nil
 }
 
 type fakeOutboxWorkerRunner struct {
@@ -28,67 +43,111 @@ func (f *fakeOutboxWorkerRunner) Run(ctx context.Context) error {
 	return f.run(ctx)
 }
 
-func TestFeedMessagingRun_ConsumerErrorCancelsWorker(t *testing.T) {
+func TestNewFeedMessaging_DoesNotConnectRabbitMQ(t *testing.T) {
+	messaging, err := newFeedMessaging(
+		config.Config{
+			Feed: config.FeedConfig{
+				FanoutFollowerThreshold: feed.DefaultFanoutFollowerThreshold,
+			},
+		},
+		outbox.NewGORMRepository(nil),
+		&connectorInbox{},
+		&connectorFollowerReader{},
+		nil,
+		newSupervisorTestLogger(),
+	)
+	if err != nil {
+		t.Fatalf("create feed messaging: %v", err)
+	}
+	if messaging.consumerSupervisor == nil {
+		t.Fatal("expected consumer supervisor")
+	}
+	if messaging.producer == nil {
+		t.Fatal("expected producer")
+	}
+	if messaging.retryProducer == nil {
+		t.Fatal("expected retry producer")
+	}
+	if messaging.worker == nil {
+		t.Fatal("expected outbox worker")
+	}
+}
+
+func TestFeedMessagingRun_SupervisorErrorDoesNotStopWorker(t *testing.T) {
+	supervisorStarted := make(chan struct{})
 	workerStarted := make(chan struct{})
-	workerCanceled := make(chan struct{})
 
 	messaging := &feedMessaging{
-		consumer: &fakeFeedConsumerRunner{
+		consumerSupervisor: &fakeConsumerSupervisorRunner{
 			run: func(ctx context.Context) error {
-				<-workerStarted
-				return errTestConsumer
+				close(supervisorStarted)
+				return errTestSupervisor
 			},
 		},
 		worker: &fakeOutboxWorkerRunner{
 			run: func(ctx context.Context) error {
 				close(workerStarted)
 				<-ctx.Done()
-				close(workerCanceled)
 				return nil
 			},
 		},
+		logger: newSupervisorTestLogger(),
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- messaging.Run(context.Background())
+		errCh <- messaging.Run(ctx)
 	}()
 
 	select {
-	case err := <-errCh:
-		if !errors.Is(err, errTestConsumer) {
-			t.Fatalf("expected consumer error, got %v", err)
-		}
+	case <-supervisorStarted:
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for Run to return")
+		t.Fatal("timed out waiting for supervisor")
+	}
+	select {
+	case <-workerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for worker")
 	}
 
 	select {
-	case <-workerCanceled:
+	case err := <-errCh:
+		t.Fatalf("Run returned after supervisor error: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
 	case <-time.After(time.Second):
-		t.Fatal("worker was not canceled")
+		t.Fatal("timed out waiting for Run to stop")
 	}
 }
 
-func TestFeedMessagingRun_WorkerErrorCancelsConsumer(t *testing.T) {
-	consumerStarted := make(chan struct{})
-	consumerCanceled := make(chan struct{})
+func TestFeedMessagingRun_WorkerErrorCancelsSupervisor(t *testing.T) {
+	supervisorStarted := make(chan struct{})
+	supervisorCanceled := make(chan struct{})
 
 	messaging := &feedMessaging{
-		consumer: &fakeFeedConsumerRunner{
+		consumerSupervisor: &fakeConsumerSupervisorRunner{
 			run: func(ctx context.Context) error {
-				close(consumerStarted)
+				close(supervisorStarted)
 				<-ctx.Done()
-				close(consumerCanceled)
+				close(supervisorCanceled)
 				return nil
 			},
 		},
 		worker: &fakeOutboxWorkerRunner{
 			run: func(ctx context.Context) error {
-				<-consumerStarted
+				<-supervisorStarted
 				return errTestWorker
 			},
 		},
+		logger: newSupervisorTestLogger(),
 	}
 
 	errCh := make(chan error, 1)
@@ -106,21 +165,21 @@ func TestFeedMessagingRun_WorkerErrorCancelsConsumer(t *testing.T) {
 	}
 
 	select {
-	case <-consumerCanceled:
+	case <-supervisorCanceled:
 	case <-time.After(time.Second):
-		t.Fatal("consumer was not canceled")
+		t.Fatal("supervisor was not canceled")
 	}
 }
 
 func TestFeedMessagingRun_NormalCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	consumerStarted := make(chan struct{})
+	supervisorStarted := make(chan struct{})
 	workerStarted := make(chan struct{})
 
 	messaging := &feedMessaging{
-		consumer: &fakeFeedConsumerRunner{
+		consumerSupervisor: &fakeConsumerSupervisorRunner{
 			run: func(ctx context.Context) error {
-				close(consumerStarted)
+				close(supervisorStarted)
 				<-ctx.Done()
 				return nil
 			},
@@ -132,6 +191,7 @@ func TestFeedMessagingRun_NormalCancellation(t *testing.T) {
 				return nil
 			},
 		},
+		logger: newSupervisorTestLogger(),
 	}
 
 	errCh := make(chan error, 1)
@@ -140,9 +200,9 @@ func TestFeedMessagingRun_NormalCancellation(t *testing.T) {
 	}()
 
 	select {
-	case <-consumerStarted:
+	case <-supervisorStarted:
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for consumer")
+		t.Fatal("timed out waiting for supervisor")
 	}
 	select {
 	case <-workerStarted:
@@ -159,5 +219,31 @@ func TestFeedMessagingRun_NormalCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for Run to return")
+	}
+}
+
+func TestFeedMessagingReady_UsesSupervisor(t *testing.T) {
+	messaging := &feedMessaging{
+		consumerSupervisor: &fakeConsumerSupervisorRunner{
+			readyErr: errTestSupervisor,
+		},
+	}
+
+	if err := messaging.Ready(context.Background()); !errors.Is(err, errTestSupervisor) {
+		t.Fatalf("expected supervisor ready error, got %v", err)
+	}
+}
+
+func TestFeedMessagingClose_ClosesSupervisor(t *testing.T) {
+	supervisor := &fakeConsumerSupervisorRunner{}
+	messaging := &feedMessaging{
+		consumerSupervisor: supervisor,
+	}
+
+	if err := messaging.Close(); err != nil {
+		t.Fatalf("close feed messaging: %v", err)
+	}
+	if supervisor.closeCount != 1 {
+		t.Fatalf("expected supervisor close once, got %d", supervisor.closeCount)
 	}
 }

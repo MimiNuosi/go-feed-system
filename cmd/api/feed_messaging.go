@@ -5,8 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-
-	amqp "github.com/rabbitmq/amqp091-go"
+	"time"
 
 	"go-feed-system/internal/feed"
 	"go-feed-system/internal/outbox"
@@ -16,86 +15,82 @@ import (
 
 // feedMessaging 聚合 Feed 消费和 Outbox 发布所需的后台组件。
 type feedMessaging struct {
-	rabbitConn      *amqp.Connection
-	consumerChannel *amqp.Channel
-	producer        *rabbitmq.Producer
-	retryProducer   *rabbitmq.Producer
-	consumer        feedConsumerRunner
-	worker          outboxWorkerRunner
+	consumerSupervisor consumerSupervisorRunner
+	producer           *rabbitmq.Producer
+	retryProducer      *rabbitmq.Producer
+	worker             outboxWorkerRunner
+	logger             *slog.Logger
 }
 
-type feedConsumerRunner interface {
-	Consume(ctx context.Context) error
+type consumerSupervisorRunner interface {
+	Run(ctx context.Context) error
+	Ready(ctx context.Context) error
+	Close() error
 }
 
 type outboxWorkerRunner interface {
 	Run(ctx context.Context) error
 }
 
+type feedMessagingMetrics interface {
+	consumerSupervisorMetrics
+	feed.ConsumerMetrics
+	outbox.PublishMetrics
+}
+
 func newFeedMessaging(
-	ctx context.Context,
 	cfg config.Config,
 	repository *outbox.GORMRepository,
 	inbox feed.Inbox,
 	followers feed.FollowerReader,
+	metrics feedMessagingMetrics,
 	logger *slog.Logger,
 ) (*feedMessaging, error) {
-	// 1. 建立 Consumer 使用的 RabbitMQ Connection。
-	rabbitConn, err := rabbitmq.Open(ctx, cfg.RabbitMQ)
-	if err != nil {
-		return nil, fmt.Errorf("open rabbitmq: %w", err)
+	if repository == nil {
+		return nil, fmt.Errorf("create feed messaging: outbox repository is nil")
+	}
+	if inbox == nil {
+		return nil, fmt.Errorf("create feed messaging: inbox is nil")
+	}
+	if followers == nil {
+		return nil, fmt.Errorf("create feed messaging: followers reader is nil")
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 
-	// 2. 使用独立 Channel 声明拓扑。拓扑声明完成后可以关闭该 Channel。
-	topologyChannel, err := rabbitConn.Channel()
-	if err != nil {
-		_ = rabbitmq.Close(rabbitConn)
-		return nil, fmt.Errorf("create rabbitmq topology channel: %w", err)
-	}
-	if err := rabbitmq.DeclareTopology(ctx, topologyChannel, cfg.RabbitMQ); err != nil {
-		_ = topologyChannel.Close()
-		_ = rabbitmq.Close(rabbitConn)
-		return nil, fmt.Errorf("declare rabbitmq topology: %w", err)
-	}
-	if err := topologyChannel.Close(); err != nil {
-		_ = rabbitmq.Close(rabbitConn)
-		return nil, fmt.Errorf("close rabbitmq topology channel: %w", err)
-	}
-
-	// 3. Consumer 使用自己的 Channel。
-	consumerChannel, err := rabbitConn.Channel()
-	if err != nil {
-		_ = rabbitmq.Close(rabbitConn)
-		return nil, fmt.Errorf("create rabbitmq consumer channel: %w", err)
-	}
-
-	// 4. 组装 Feed 消费链路。
+	// 1. Producer 自己维护发送 Channel 和重连，这里只进行无网络 I/O 的构造。
 	producer := rabbitmq.NewProducer(cfg.RabbitMQ, logger)
 	retryConfig := cfg.RabbitMQ
 	retryConfig.Exchange = cfg.RabbitMQ.RetryExchange
 	retryProducer := rabbitmq.NewProducer(retryConfig, logger)
 
-	fanoutService := feed.NewFanoutService(
+	// 2. Consumer 的连接、拓扑声明和重连全部由 Supervisor + Connector 管理。
+	connector := newRabbitConsumerConnector(
+		cfg.RabbitMQ,
 		followers,
 		inbox,
 		cfg.Feed.FanoutFollowerThreshold,
-	)
-	consumer := feed.NewRabbitConsumer(
-		consumerChannel,
-		cfg.RabbitMQ.Queue,
-		fanoutService,
 		retryProducer,
-		cfg.RabbitMQ.MaxRetries,
 		logger,
+		metrics,
+	)
+	consumerSupervisor := NewConsumerSupervisor(
+		connector,
+		defaultReconnectMinBackoff,
+		defaultReconnectMaxBackoff,
+		logger,
+		metrics,
 	)
 
-	// 5. 组装 Outbox 发布链路。Producer 自己维护发送 Channel 和重连。
+	// 3. Outbox Worker 只依赖 Publisher，和 Consumer 生命周期完全独立。
 	messagePublisher := outbox.NewRabbitMQPublisher(producer)
 	outboxPublisher := outbox.NewPublisher(
 		repository,
 		messagePublisher,
 		outbox.DefaultPublishBatchSize,
 		logger,
+		metrics,
 	)
 	worker := outbox.NewWorker(
 		outboxPublisher,
@@ -104,54 +99,88 @@ func newFeedMessaging(
 	)
 
 	return &feedMessaging{
-		rabbitConn:      rabbitConn,
-		consumerChannel: consumerChannel,
-		producer:        producer,
-		retryProducer:   retryProducer,
-		consumer:        consumer,
-		worker:          worker,
+		consumerSupervisor: consumerSupervisor,
+		producer:           producer,
+		retryProducer:      retryProducer,
+		worker:             worker,
+		logger:             logger,
 	}, nil
 }
 
-// Run 同时运行 Feed Consumer 和 Outbox Worker。
-//
-// 任一服务异常退出时，会取消另一个服务并返回第一个错误。
+// Run 同时运行 Feed Consumer Supervisor 和 Outbox Worker。
 func (m *feedMessaging) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	errCh := make(chan error, 2)
+	supervisorDone := make(chan struct{})
+	workerErrCh := make(chan error, 1)
 
 	go func() {
-		if err := m.consumer.Consume(runCtx); err != nil {
-			errCh <- fmt.Errorf("feed consumer: %w", err)
-			return
-		}
-		errCh <- nil
+		defer close(supervisorDone)
+		m.runConsumerSupervisor(runCtx)
 	}()
 
 	go func() {
-		if err := m.worker.Run(runCtx); err != nil {
-			errCh <- fmt.Errorf("outbox worker: %w", err)
-			return
-		}
-		errCh <- nil
+		workerErrCh <- m.worker.Run(runCtx)
 	}()
 
-	var firstErr error
-	for i := 0; i < 2; i++ {
-		err := <-errCh
-		if err != nil && firstErr == nil {
-			firstErr = err
-			cancel()
+	select {
+	case <-ctx.Done():
+		cancel()
+		<-supervisorDone
+		return <-workerErrCh
+	case err := <-workerErrCh:
+		cancel()
+		<-supervisorDone
+		if err != nil {
+			return fmt.Errorf("outbox worker: %w", err)
 		}
+		return fmt.Errorf("outbox worker stopped unexpectedly")
+	}
+}
+
+func (m *feedMessaging) runConsumerSupervisor(ctx context.Context) {
+	logger := m.logger
+	if logger == nil {
+		logger = slog.Default()
 	}
 
-	return firstErr
+	for {
+		err := m.consumerSupervisor.Run(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+
+		// ConsumerSupervisor 会自行处理 RabbitMQ 连接和消费错误。
+		// 运行到这里说明守护循环本身意外退出，因此由外层退避后重新启动。
+		if err != nil {
+			logger.Error("consumer supervisor stopped unexpectedly", "error", err)
+		} else {
+			logger.Warn("consumer supervisor stopped unexpectedly")
+		}
+
+		timer := time.NewTimer(defaultReconnectMinBackoff)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return
+		}
+	}
 }
 
 func (m *feedMessaging) Close() error {
 	var errs []error
+	if m.consumerSupervisor != nil {
+		if err := m.consumerSupervisor.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close consumer supervisor: %w", err))
+		}
+	}
 	if m.producer != nil {
 		if err := m.producer.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("close rabbitmq producer: %w", err))
@@ -162,16 +191,13 @@ func (m *feedMessaging) Close() error {
 			errs = append(errs, fmt.Errorf("close rabbitmq retry producer: %w", err))
 		}
 	}
-	if m.consumerChannel != nil {
-		if err := m.consumerChannel.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close rabbitmq consumer channel: %w", err))
-		}
-	}
-	if m.rabbitConn != nil {
-		if err := rabbitmq.Close(m.rabbitConn); err != nil {
-			errs = append(errs, fmt.Errorf("close rabbitmq connection: %w", err))
-		}
-	}
 
 	return errors.Join(errs...)
+}
+
+func (m *feedMessaging) Ready(ctx context.Context) error {
+	if m.consumerSupervisor == nil {
+		return fmt.Errorf("consumer supervisor is not configured")
+	}
+	return m.consumerSupervisor.Ready(ctx)
 }
