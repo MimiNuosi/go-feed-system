@@ -9,18 +9,18 @@ prometheus.yml  抓取 /metrics
 alerts.yml      基础告警规则
 ```
 
-默认抓取地址：
+Compose 默认抓取地址：
 
 ```text
-http://127.0.0.1:8080/metrics
+http://api:8080/metrics
 ```
 
-如果 Prometheus 运行在 Docker 中，而 API 运行在 Windows 主机，需要把
-`prometheus.yml` 中的 target 改为：
+如果 Prometheus 直接运行在 Windows 主机，需要把 `prometheus.yml` 中的
+target 改为：
 
 ```yaml
 targets:
-  - host.docker.internal:8080
+  - 127.0.0.1:8080
 ```
 
 ## 告警

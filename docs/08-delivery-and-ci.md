@@ -45,21 +45,25 @@ grafana
 
 ### 8.1 Dockerfile
 
-- [ ] 为 API 编写多阶段 Dockerfile。
-- [ ] 使用较小运行时镜像。
-- [ ] 只复制运行时需要的二进制和静态资源。
+- [x] 为 API 编写多阶段 Dockerfile。
+- [x] 使用较小运行时镜像。
+- [x] 只复制运行时需要的二进制和静态资源。
+- [x] 增加 `.dockerignore`，排除缓存、数据、密钥和构建产物。
+- [x] 安装 Docker Desktop 后执行 `docker build` 验证镜像。
+- [x] 配置 Docker Hub 镜像加速器和 Go 模块代理。
 - [ ] 保留 `go test` 和 `go vet` 在构建阶段执行的可能。
 
 ### 8.2 Docker Compose
 
-- [ ] MySQL 使用持久化 volume。
-- [ ] Redis 使用密码并持久化数据。
-- [ ] RabbitMQ 开启管理插件。
-- [ ] API 通过环境变量读取全部配置。
-- [ ] Prometheus 抓取 `api:8080/metrics`。
-- [ ] Grafana 自动加载阶段 7 的 provisioning 和 Dashboard。
-- [ ] 为关键依赖配置 healthcheck。
-- [ ] 使用 `depends_on` 控制启动顺序，但仍由应用自行处理短暂依赖故障。
+- [x] MySQL 使用持久化 volume。
+- [x] Redis 使用密码并持久化数据。
+- [x] RabbitMQ 开启管理插件。
+- [x] API 通过环境变量读取全部配置。
+- [x] Prometheus 抓取 `api:8080/metrics`。
+- [x] Grafana 自动加载阶段 7 的 provisioning 和 Dashboard。
+- [x] 为关键依赖配置 healthcheck。
+- [x] 使用 `depends_on` 控制启动顺序，但仍由应用自行处理短暂依赖故障。
+- [x] 支持通过环境变量覆盖宿主机端口，避免和 Windows 原生服务冲突。
 
 注意：当前 `deploy/prometheus/prometheus.yml` 的目标是
 `127.0.0.1:8080`，面向 Windows 本机运行。Docker Compose 中需要改为：
@@ -76,10 +80,10 @@ http://prometheus:9090
 
 ### 8.3 配置与密钥
 
-- [ ] 提供 `.env.example`，不提交真实密码。
-- [ ] 保留本地 `.env`，继续加入 `.gitignore`。
-- [ ] 说明 JWT、MySQL、Redis、RabbitMQ 配置项。
-- [ ] 区分本地开发默认值和部署环境变量。
+- [x] 提供 `.env.example`，不提交真实密码。
+- [x] 保留本地 `.env`，继续加入 `.gitignore`。
+- [x] 说明 JWT、MySQL、Redis、RabbitMQ 配置项。
+- [x] 区分本地开发默认值和部署环境变量。
 
 ### 8.4 CI
 
@@ -104,11 +108,26 @@ CI 的作用类似自动化的 C++ 构建机：
 -> 验证部署配置
 ```
 
+当前 workflow：
+
+```text
+.github/workflows/ci.yml
+```
+
+已完成：
+
+- [x] 检查 Go 代码格式。
+- [x] 运行 `go test ./...`。
+- [x] 运行 `go vet ./...`。
+- [x] 构建 `./cmd/...`。
+- [x] 校验 Prometheus、Grafana 和 GitHub Actions 配置。
+- [ ] 后续按需增加 MySQL、Redis、RabbitMQ service container 集成任务。
+
 ### 8.5 文档
 
-- [ ] README 增加一键启动步骤。
-- [ ] 记录端口、账号来源和健康检查地址。
-- [ ] 记录 Prometheus 和 Grafana 地址。
+- [x] README 增加一键启动步骤。
+- [x] 记录端口、账号来源和健康检查地址。
+- [x] 记录 Prometheus 和 Grafana 地址。
 - [ ] 记录常见故障处理方式。
 
 ## 验收标准
