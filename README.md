@@ -203,3 +203,4 @@ go build ./cmd/...
 - [阶段 6：Feed 写扩散与推拉结合](docs/06-feed-scaling.md)
 - [阶段 7：健康检查、重连、DLQ 与指标](docs/07-operations-observability.md)
 - [阶段 8：交付、Docker Compose 与 CI](docs/08-delivery-and-ci.md)
+- [阶段 9：热门 Feed、滑动窗口热榜与防击穿](docs/09-hot-ranking.md)
