@@ -8,6 +8,7 @@ import (
 
 	"go-feed-system/internal/feed"
 	"go-feed-system/internal/health"
+	"go-feed-system/internal/hot"
 	"go-feed-system/internal/interaction"
 	"go-feed-system/internal/middleware"
 	"go-feed-system/internal/user"
@@ -27,6 +28,7 @@ type Dependencies struct {
 	LikeHandler            *interaction.LikeHandler
 	CommentHandler         *interaction.CommentHandler
 	FeedHandler            *feed.Handler
+	HotHandler             *hot.Handler
 }
 
 // New 组装 HTTP 路由和中间件。
@@ -60,6 +62,16 @@ func New(deps Dependencies) *gin.Engine {
 	v1.POST("/auth/register", deps.UserHandler.Register)
 	v1.POST("/auth/login", deps.UserHandler.Login)
 	v1.GET("/videos/:id/comments", deps.CommentHandler.List)
+	v1.POST(
+		"/videos/:id/view",
+		deps.OptionalAuthMiddleware,
+		deps.HotHandler.RecordView,
+	)
+	v1.GET(
+		"/feed/hot",
+		deps.OptionalAuthMiddleware,
+		deps.HotHandler.ListHot,
+	)
 
 	// 2. 需要鉴权的接口组
 	auth := v1.Group("")

@@ -166,3 +166,57 @@ func TestGORMRepository_CreateWithOutbox(t *testing.T) {
 		}
 	})
 }
+
+func TestGORMRepository_ListReadyByIDs(t *testing.T) {
+	t.Run("空 ID 返回非 nil 空切片", func(t *testing.T) {
+		tx := openTestDB(t)
+		repo := NewGORMRepository(tx, nil)
+
+		videos, err := repo.ListReadyByIDs(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("list ready videos: %v", err)
+		}
+		if videos == nil || len(videos) != 0 {
+			t.Fatalf("expected non-nil empty slice, got %#v", videos)
+		}
+	})
+
+	t.Run("只返回 ready 视频并忽略缺失 ID", func(t *testing.T) {
+		tx := openTestDB(t)
+		author := createTestAuthor(t, tx)
+		repo := NewGORMRepository(tx, nil)
+
+		ready1 := newOutboxTestVideo(author.ID)
+		ready2 := newOutboxTestVideo(author.ID)
+		pending := newOutboxTestVideo(author.ID)
+		pending.Status = "pending"
+
+		for _, video := range []*Video{ready1, ready2, pending} {
+			if err := tx.Create(video).Error; err != nil {
+				t.Fatalf("create test video: %v", err)
+			}
+		}
+
+		videos, err := repo.ListReadyByIDs(
+			context.Background(),
+			[]uint64{ready1.ID, pending.ID, ready2.ID, 999999},
+		)
+		if err != nil {
+			t.Fatalf("list ready videos: %v", err)
+		}
+		if len(videos) != 2 {
+			t.Fatalf("expected two ready videos, got %v", videos)
+		}
+
+		got := map[uint64]bool{}
+		for _, item := range videos {
+			got[item.ID] = true
+			if item.Status != StatusReady {
+				t.Fatalf("expected ready video, got status %q", item.Status)
+			}
+		}
+		if !got[ready1.ID] || !got[ready2.ID] {
+			t.Fatalf("expected IDs %d and %d, got %v", ready1.ID, ready2.ID, videos)
+		}
+	})
+}

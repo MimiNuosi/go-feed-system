@@ -9,9 +9,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"go-feed-system/internal/feed"
 	"go-feed-system/internal/health"
+	"go-feed-system/internal/hot"
 	"go-feed-system/internal/interaction"
 	"go-feed-system/internal/middleware"
 	"go-feed-system/internal/user"
@@ -68,6 +70,66 @@ type fakeRouteTokenParser struct {
 	userID    uint64
 	err       error
 	callCount int
+}
+
+type fakeHotRouteService struct {
+	calls         int
+	videoID       uint64
+	viewerKey     string
+	listHotCalls  int
+	listHotVideos []hot.RankedVideo
+}
+
+func (f *fakeHotRouteService) RecordView(
+	ctx context.Context,
+	videoID uint64,
+	viewerKey string,
+	occurredAt time.Time,
+) (bool, error) {
+	f.calls++
+	f.videoID = videoID
+	f.viewerKey = viewerKey
+	return true, nil
+}
+
+func (f *fakeHotRouteService) ListHot(
+	ctx context.Context,
+	window hot.Window,
+	at time.Time,
+	cursor *hot.Cursor,
+	pageSize int,
+) ([]hot.RankedVideo, error) {
+	f.listHotCalls++
+	return f.listHotVideos, nil
+}
+
+func (f *fakeHotRouteService) ListReadyByIDs(
+	ctx context.Context,
+	ids []uint64,
+) ([]video.Video, error) {
+	return nil, nil
+}
+
+func (f *fakeHotRouteService) GetByIDs(
+	ctx context.Context,
+	ids []uint64,
+) (map[uint64]*user.User, error) {
+	return nil, nil
+}
+
+func (f *fakeHotRouteService) CountByVideoIDs(
+	ctx context.Context,
+	videoIDs []uint64,
+) (map[uint64]int64, error) {
+	return nil, nil
+}
+
+func (f *fakeHotRouteService) LikedVideoIDsByUser(
+	ctx context.Context,
+	userID uint64,
+	videoIDs []uint64,
+) (map[uint64]bool, error) {
+	return nil, nil
 }
 
 func (f *fakeRouteTokenParser) Parse(raw string) (uint64, error) {
@@ -135,6 +197,7 @@ func newTestEngine(
 	likeService *fakeLikeRouteService,
 	commentService *fakeCommentRouteService,
 ) *gin.Engine {
+	hotService := &fakeHotRouteService{}
 	return New(Dependencies{
 		Logger:                 logger,
 		HealthHandler:          health.NewHandler("test-version", logger),
@@ -145,6 +208,14 @@ func newTestEngine(
 		FollowHandler:          interaction.NewFollowHandler(nil, logger),
 		LikeHandler:            interaction.NewLikeHandler(likeService, logger),
 		CommentHandler:         interaction.NewCommentHandler(commentService, logger),
+		HotHandler: hot.NewHandler(
+			hotService,
+			hotService,
+			hotService,
+			hotService,
+			hotService,
+			logger,
+		),
 	})
 }
 
@@ -195,6 +266,119 @@ func TestMetricsRoute(t *testing.T) {
 	}
 	if response.Body.String() != "metrics-body" {
 		t.Fatalf("expected metrics body, got %q", response.Body.String())
+	}
+}
+
+func TestHotViewRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	t.Run("匿名请求记录 IP viewer key", func(t *testing.T) {
+		hotService := &fakeHotRouteService{}
+		engine := New(Dependencies{
+			Logger:        logger,
+			HealthHandler: health.NewHandler("test", logger),
+			HotHandler: hot.NewHandler(
+				hotService,
+				hotService,
+				hotService,
+				hotService,
+				hotService,
+				logger,
+			),
+			AuthMiddleware:         func(c *gin.Context) { c.Next() },
+			OptionalAuthMiddleware: func(c *gin.Context) { c.Next() },
+		})
+
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/videos/12/view", nil)
+		req.RemoteAddr = "203.0.113.7:12345"
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, req)
+
+		if recorder.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d", recorder.Code)
+		}
+		if hotService.calls != 1 || hotService.videoID != 12 {
+			t.Fatalf("unexpected hot service call: %+v", hotService)
+		}
+		if !strings.HasPrefix(hotService.viewerKey, "ip:") {
+			t.Fatalf("expected IP viewer key, got %q", hotService.viewerKey)
+		}
+	})
+
+	t.Run("登录请求使用 user viewer key", func(t *testing.T) {
+		hotService := &fakeHotRouteService{}
+		optionalAuth := func(c *gin.Context) {
+			ctx := authctx.WithUserID(c.Request.Context(), 7)
+			c.Request = c.Request.WithContext(ctx)
+			c.Next()
+		}
+		engine := New(Dependencies{
+			Logger:        logger,
+			HealthHandler: health.NewHandler("test", logger),
+			HotHandler: hot.NewHandler(
+				hotService,
+				hotService,
+				hotService,
+				hotService,
+				hotService,
+				logger,
+			),
+			AuthMiddleware:         func(c *gin.Context) { c.Next() },
+			OptionalAuthMiddleware: optionalAuth,
+		})
+
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/videos/12/view", nil)
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, req)
+
+		if recorder.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d", recorder.Code)
+		}
+		if hotService.viewerKey != "user:7" {
+			t.Fatalf("expected user viewer key, got %q", hotService.viewerKey)
+		}
+	})
+}
+
+func TestHotFeedRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	hotService := &fakeHotRouteService{
+		listHotVideos: []hot.RankedVideo{{VideoID: 3, Score: 5}},
+	}
+
+	engine := New(Dependencies{
+		Logger:        logger,
+		HealthHandler: health.NewHandler("test", logger),
+		HotHandler: hot.NewHandler(
+			hotService,
+			hotService,
+			hotService,
+			hotService,
+			hotService,
+			logger,
+		),
+		AuthMiddleware:         func(c *gin.Context) { c.Next() },
+		OptionalAuthMiddleware: func(c *gin.Context) { c.Next() },
+	})
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/feed/hot?window=1h&page_size=10",
+		nil,
+	)
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if hotService.listHotCalls != 1 {
+		t.Fatalf("expected one ListHot call, got %d", hotService.listHotCalls)
+	}
+	if !strings.Contains(recorder.Body.String(), `"VideoID":3`) {
+		t.Fatalf("expected ranked video in body, got %s", recorder.Body.String())
 	}
 }
 

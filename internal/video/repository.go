@@ -96,3 +96,26 @@ func (r *GORMRepository) FindByID(ctx context.Context, id uint64) (*Video, error
 	}
 	return &video, nil
 }
+
+func (r *GORMRepository) ListReadyByIDs(
+	ctx context.Context,
+	ids []uint64,
+) ([]Video, error) {
+	if len(ids) == 0 {
+		return []Video{}, nil
+	}
+
+	var videos []Video
+
+	err := r.db.WithContext(ctx).
+		Where("id IN ?", ids).
+		Where("status = ?", StatusReady).
+		Find(&videos).Error
+	if err != nil {
+		return nil, fmt.Errorf("list ready videos by ids: %w", err)
+	}
+	if videos == nil {
+		return []Video{}, nil
+	}
+	return videos, nil
+}

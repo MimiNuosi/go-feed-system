@@ -13,6 +13,7 @@ import (
 
 	"go-feed-system/internal/feed"
 	"go-feed-system/internal/health"
+	"go-feed-system/internal/hot"
 	"go-feed-system/internal/interaction"
 	"go-feed-system/internal/middleware"
 	"go-feed-system/internal/outbox"
@@ -160,6 +161,17 @@ func run() error {
 	)
 	feedHandler := feed.NewHandler(feedService, logger)
 
+	hotRepository := hot.NewRedisRepository(redisClient)
+	hotService := hot.NewService(hotRepository, logger)
+	hotHandler := hot.NewHandler(
+		hotService,
+		hotService,
+		videoRepository,
+		userService,
+		likeService,
+		logger,
+	)
+
 	engine := router.New(router.Dependencies{
 		Logger:         logger,
 		Metrics:        appMetrics,
@@ -199,6 +211,7 @@ func run() error {
 		LikeHandler:            likeHandler,
 		CommentHandler:         commentHandler,
 		FeedHandler:            feedHandler,
+		HotHandler:             hotHandler,
 	})
 
 	server := &http.Server{
