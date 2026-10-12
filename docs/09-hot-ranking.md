@@ -290,9 +290,46 @@ videos.view_count BIGINT UNSIGNED NOT NULL DEFAULT 0
 
 ### 9.5 浏览量回写
 
-- [ ] 实现批量回写 Worker。
-- [ ] 保证“MySQL 成功后再删除 Redis 增量”。
-- [ ] 增加失败重试和指标。
+- [x] 回写 Worker 脚手架、指标与 main 接线（本次交付）。
+- [ ] 实现 Redis 侧 `PendingViews` / `AckPendingView`（留作练习）。
+- [ ] 实现 MySQL 侧 `video.GORMRepository.AddViewCount`（留作练习）。
+- [x] 增加失败重试和指标（重试靠"不 ack"实现，指标为 `view_writeback_total`）。
+
+已交付的文件与职责：
+
+```text
+internal/hot/writeback.go
+  PendingViewStore      Redis 侧：读增量 + ack
+  ViewCountWriter       MySQL 侧：累加 view_count
+  ViewWriteback         单轮逻辑：取增量 -> 写库 -> ack
+  ViewWritebackWorker   ticker 调度，默认 5 秒
+pkg/metrics
+  view_writeback_total{result="success|write_error|ack_error"}
+cmd/api/main.go
+  构造 worker，并在 run() 里和 HTTP server、Feed messaging 并行运行
+internal/hot/redis_repository_test.go
+  TestRedisRepository_PendingViewsIntegration 就是验收测试
+```
+
+留给你填的三处（每处都有 `TODO(阶段 9.5)` 和实现提示）：
+
+```text
+1. internal/hot/redis_repository.go  PendingViews      HGetAll + 解析 + 截断
+2. internal/hot/redis_repository.go  AckPendingView    HDel（field 必须是十进制 videoID）
+3. internal/video/repository.go      AddViewCount      一条 UPDATE 自增 + WHERE id
+```
+
+验收方式：本机 Redis 可用时跑
+
+```text
+TEST_REDIS_ADDR=<addr> TEST_REDIS_DB=15 TEST_REDIS_PASSWORD=<pass> \
+  go test -run PendingViewsIntegration ./internal/hot/
+```
+
+现在是红的（因为方法还没实现），实现完就会变绿。
+
+注意：在这三个方法填好之前不要重建 api 镜像，否则 Worker 每 5 秒会打一条
+“尚未实现”的错误日志。
 
 已确定的做法（方案 A，宁可多算不可少算）：
 

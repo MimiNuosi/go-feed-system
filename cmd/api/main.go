@@ -143,6 +143,22 @@ func run() error {
 	hotService := hot.NewService(hotRepository, logger)
 	hotScoreRecorder := hot.NewScoreRecorder(hotRepository, logger)
 
+	// 浏览量回写：把 Redis 里累计的浏览增量刷进 MySQL。
+	//
+	// 这里把 videoRepository 当"浏览量写入"能力传进去，用的是 hot 包自己
+	// 声明的窄接口 ViewCountWriter，而不是 video.Repository。
+	viewWritebackWorker := hot.NewViewWritebackWorker(
+		hot.NewViewWriteback(
+			hotRepository,
+			videoRepository,
+			hot.DefaultViewWritebackBatchSize,
+			logger,
+			appMetrics,
+		),
+		hot.DefaultViewWritebackInterval,
+		logger,
+	)
+
 	likeRepository := interaction.NewGORMLikeRepository(db)
 	likeService := interaction.NewLikeService(
 		likeRepository,
@@ -261,8 +277,14 @@ func run() error {
 		messagingErrCh <- messaging.Run(runCtx)
 	}()
 
+	viewWritebackErrCh := make(chan error, 1)
+	go func() {
+		viewWritebackErrCh <- viewWritebackWorker.Run(runCtx)
+	}()
+
 	var runErr error
 	messagingDone := false
+	viewWritebackDone := false
 
 	select {
 	case err := <-serverErrCh:
@@ -275,6 +297,13 @@ func run() error {
 			runErr = fmt.Errorf("feed messaging stopped: %w", err)
 		} else {
 			runErr = errors.New("feed messaging stopped unexpectedly")
+		}
+	case err := <-viewWritebackErrCh:
+		viewWritebackDone = true
+		if err != nil {
+			runErr = fmt.Errorf("view writeback worker stopped: %w", err)
+		} else {
+			runErr = errors.New("view writeback worker stopped unexpectedly")
 		}
 	case <-ctx.Done():
 		// 恢复第二次 Ctrl+C 的默认强制退出行为。
@@ -303,6 +332,27 @@ func run() error {
 		case <-shutdownCtx.Done():
 			if runErr == nil {
 				runErr = fmt.Errorf("stop feed messaging: %w", shutdownCtx.Err())
+			}
+		}
+	}
+
+	if !viewWritebackDone {
+		// 单独给后台 worker 一份等待预算，避免和上面的等待共用同一个 deadline，
+		// 否则前一个等超时后，这里会立刻失败。
+		workerStopCtx, cancelWorkerStop := context.WithTimeout(
+			context.Background(),
+			cfg.HTTP.ShutdownTimeout,
+		)
+		defer cancelWorkerStop()
+
+		select {
+		case err := <-viewWritebackErrCh:
+			if err != nil && runErr == nil {
+				runErr = fmt.Errorf("stop view writeback worker: %w", err)
+			}
+		case <-workerStopCtx.Done():
+			if runErr == nil {
+				runErr = fmt.Errorf("stop view writeback worker: %w", workerStopCtx.Err())
 			}
 		}
 	}

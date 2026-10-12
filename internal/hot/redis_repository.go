@@ -2,6 +2,7 @@ package hot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -45,6 +46,44 @@ func NewRedisRepository(client *redis.Client) *RedisRepository {
 
 var _ RankingRepository = (*RedisRepository)(nil)
 var _ ScoreWriter = (*RedisRepository)(nil)
+var _ PendingViewStore = (*RedisRepository)(nil)
+
+// PendingViews 读取最多 limit 条待回写的浏览量增量。
+//
+// TODO(阶段 9.5)：这里由你实现。提示：
+//
+//  1. 数据在 PendingViewsKey() 这个 Hash 里，field 是 videoID，value 是增量。
+//     第一版可以直接 HGetAll 全量读回来再截断；如果 Hash 很大，
+//     应该改用 HScan 分批，避免一次性把几万个 field 拉进内存。
+//  2. field 用 strconv.ParseUint 转成 uint64，value 用 strconv.ParseInt。
+//     解析失败的条目说明是脏数据，必须跳过并记录，不能让一条脏数据
+//     把整个批次卡死。
+//  3. 返回 map[uint64]int64，条数不要超过 limit。
+func (r *RedisRepository) PendingViews(
+	ctx context.Context,
+	limit int,
+) (map[uint64]int64, error) {
+	if limit <= 0 {
+		return map[uint64]int64{}, nil
+	}
+	return nil, errors.New("PendingViews 尚未实现：见 TODO(阶段 9.5)")
+}
+
+// AckPendingView 在增量成功落库后，删除对应的 Hash 字段。
+//
+// TODO(阶段 9.5)：这里由你实现。提示：
+//
+//  1. HDEL 的 field 必须和 HINCRBY 时用的完全一致：RecordView 的 Lua 里
+//     写的是十进制 videoID（见 recordViewScript 的 ARGV[1]）。
+//     格式不一致会导致删不掉，增量会被反复累加 —— 这是这类代码最常见的 bug。
+//  2. 删除后可以检查返回值确认确实删掉了一条，删 0 条说明它已经被别的
+//     实例处理过了，这种情况按成功处理即可（幂等）。
+func (r *RedisRepository) AckPendingView(ctx context.Context, videoID uint64) error {
+	if videoID == 0 {
+		return fmt.Errorf("ack pending view: video ID is zero: %w", ErrInvalidInput)
+	}
+	return errors.New("AckPendingView 尚未实现：见 TODO(阶段 9.5)")
+}
 
 func (r *RedisRepository) RecordView(
 	ctx context.Context,

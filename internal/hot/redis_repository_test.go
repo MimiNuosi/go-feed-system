@@ -373,6 +373,67 @@ func TestRedisRepository_AddScoreIntegration(t *testing.T) {
 	}
 }
 
+// TestRedisRepository_PendingViewsIntegration 是阶段 9.5 的验收测试。
+//
+// 它现在必然失败，因为 PendingViews / AckPendingView 还是 TODO 骨架。
+// 把这两个方法实现完，这个测试就会变绿。
+// 需要本机 Redis 可用，否则会自动跳过。
+func TestRedisRepository_PendingViewsIntegration(t *testing.T) {
+	client := openHotTestRedis(t)
+	repository := NewRedisRepository(client)
+	ctx := context.Background()
+
+	t.Cleanup(func() {
+		_ = client.Del(context.Background(), PendingViewsKey()).Err()
+	})
+
+	// 造三条正常增量，再加一条 field 不是数字的脏数据。
+	if err := client.HSet(
+		ctx,
+		PendingViewsKey(),
+		"104", 3,
+		"102", 1,
+		"103", 2,
+	).Err(); err != nil {
+		t.Fatalf("seed pending views: %v", err)
+	}
+	if err := client.HSet(ctx, PendingViewsKey(), "not-a-number", 5).Err(); err != nil {
+		t.Fatalf("seed dirty field: %v", err)
+	}
+
+	pendings, err := repository.PendingViews(ctx, 10)
+	if err != nil {
+		t.Fatalf("pending views: %v", err)
+	}
+	if len(pendings) != 3 {
+		t.Fatalf("expected 3 valid pendings, got %d: %v", len(pendings), pendings)
+	}
+	if pendings[102] != 1 || pendings[103] != 2 || pendings[104] != 3 {
+		t.Fatalf("unexpected pendings: %v", pendings)
+	}
+
+	limited, err := repository.PendingViews(ctx, 2)
+	if err != nil {
+		t.Fatalf("pending views with limit: %v", err)
+	}
+	if len(limited) != 2 {
+		t.Fatalf("expected limit to cap result at 2, got %d: %v", len(limited), limited)
+	}
+
+	if err := repository.AckPendingView(ctx, 104); err != nil {
+		t.Fatalf("ack pending view: %v", err)
+	}
+	value, err := client.HGet(ctx, PendingViewsKey(), "104").Result()
+	if !errors.Is(err, redis.Nil) {
+		t.Fatalf("expected field 104 to be deleted, got value=%q err=%v", value, err)
+	}
+
+	// 重复 ack 必须幂等：第二条已经没了，再删一次也算成功。
+	if err := repository.AckPendingView(ctx, 104); err != nil {
+		t.Fatalf("repeat ack should be idempotent, got %v", err)
+	}
+}
+
 func openHotTestRedis(t *testing.T) *redis.Client {
 	t.Helper()
 

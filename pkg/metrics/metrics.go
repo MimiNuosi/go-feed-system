@@ -25,6 +25,7 @@ type Metrics struct {
 	consumerDLQ       *prometheus.CounterVec
 
 	outboxPublish *prometheus.CounterVec
+	viewWriteback *prometheus.CounterVec
 }
 
 func New() *Metrics {
@@ -79,6 +80,13 @@ func New() *Metrics {
 		},
 		[]string{"result"},
 	)
+	viewWriteback := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "view_writeback_total",
+			Help: "Total number of view-count writeback attempts by result.",
+		},
+		[]string{"result"},
+	)
 
 	registry.MustRegister(
 		httpInFlight,
@@ -88,6 +96,7 @@ func New() *Metrics {
 		consumerConnected,
 		consumerDLQ,
 		outboxPublish,
+		viewWriteback,
 	)
 	consumerConnected.Set(0)
 
@@ -100,6 +109,7 @@ func New() *Metrics {
 		consumerConnected: consumerConnected,
 		consumerDLQ:       consumerDLQ,
 		outboxPublish:     outboxPublish,
+		viewWriteback:     viewWriteback,
 	}
 }
 
@@ -144,4 +154,8 @@ func (m *Metrics) IncDLQMessage(reason string) {
 
 func (m *Metrics) IncOutboxPublish(result string) {
 	m.outboxPublish.WithLabelValues(result).Inc()
+}
+
+func (m *Metrics) IncViewWriteback(result string) {
+	m.viewWriteback.WithLabelValues(result).Inc()
 }
