@@ -83,9 +83,6 @@ func (r *GORMRepository) createWithTx(ctx context.Context, tx *gorm.DB, video *V
 }
 
 func (r *GORMRepository) FindByID(ctx context.Context, id uint64) (*Video, error) {
-	// TODO(阶段 3.1)：按主键查询视频。
-	//
-	// 查询不到时返回 ErrNotFound，不要泄露 gorm.ErrRecordNotFound。
 	var video Video
 
 	if err := r.db.WithContext(ctx).Where("id = ?", id).First(&video).Error; err != nil {
@@ -125,14 +122,9 @@ func (r *GORMRepository) ListReadyByIDs(
 // 注意它不在 Repository 接口里：只有浏览量回写 Worker 需要这个能力，
 // 而 hot 包按"接口定义在使用方"的原则自己声明了 ViewCountWriter。
 //
-// TODO(阶段 9.5)：这里由你实现。提示：
-//
-//  1. 必须一条 UPDATE 完成：SET view_count = view_count + ?。
-//     不要先 SELECT 再 UPDATE，那会在并发下丢更新。
-//     GORM 里可以用 gorm.Expr("view_count + ?", delta)。
-//  2. 必须带 WHERE id = ? 条件。视频已被删除时 RowsAffected 会是 0，
-//     这不算错误：增量直接丢弃，但要返回 nil，让上层正常 ack 掉。
-//  3. 出错时用 fmt.Errorf("add view count: %w", err) 包装。
+// 必须一条 UPDATE 完成自增，不能先 SELECT 再 UPDATE：后者在并发下会丢更新。
+// 视频已被删除时 RowsAffected == 0，这不算是错误，增量直接丢弃，
+// 返回 nil 让上层正常 ack 即可。
 func (r *GORMRepository) AddViewCount(
 	ctx context.Context,
 	videoID uint64,
@@ -141,5 +133,15 @@ func (r *GORMRepository) AddViewCount(
 	if videoID == 0 || delta <= 0 {
 		return fmt.Errorf("invalid view count delta: %w", ErrInvalidInput)
 	}
-	return errors.New("AddViewCount 尚未实现：见 TODO(阶段 9.5)")
+
+	result := r.db.WithContext(ctx).
+		Model(&Video{}).
+		Where("id = ?", videoID).
+		Update("view_count", gorm.Expr("view_count + ?", delta))
+
+	if result.Error != nil {
+		return fmt.Errorf("add view count: %w", result.Error)
+	}
+
+	return nil
 }

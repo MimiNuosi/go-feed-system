@@ -16,6 +16,7 @@ type Video struct {
 	OriginalFilename string    `gorm:"column:original_filename;size:255;not null"`
 	ContentType      string    `gorm:"column:content_type;size:100;not null"`
 	SizeBytes        int64     `gorm:"column:size_bytes;not null"`
+	ViewCount        int64     `gorm:"column:view_count;not null"`
 	Status           string    `gorm:"column:status;size:20;not null"`
 	CreatedAt        time.Time `gorm:"column:created_at;not null;index:idx_videos_author_created_id,priority:2"`
 	UpdatedAt        time.Time `gorm:"column:updated_at;not null"`

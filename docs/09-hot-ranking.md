@@ -290,9 +290,9 @@ videos.view_count BIGINT UNSIGNED NOT NULL DEFAULT 0
 
 ### 9.5 浏览量回写
 
-- [x] 回写 Worker 脚手架、指标与 main 接线（本次交付）。
-- [ ] 实现 Redis 侧 `PendingViews` / `AckPendingView`（留作练习）。
-- [ ] 实现 MySQL 侧 `video.GORMRepository.AddViewCount`（留作练习）。
+- [x] 回写 Worker、指标与 main 接线。
+- [x] 实现 Redis 侧 `PendingViews` / `AckPendingView`。
+- [x] 实现 MySQL 侧 `video.GORMRepository.AddViewCount`。
 - [x] 增加失败重试和指标（重试靠"不 ack"实现，指标为 `view_writeback_total`）。
 
 已交付的文件与职责：
@@ -311,25 +311,28 @@ internal/hot/redis_repository_test.go
   TestRedisRepository_PendingViewsIntegration 就是验收测试
 ```
 
-留给你填的三处（每处都有 `TODO(阶段 9.5)` 和实现提示）：
+三个存取方法的落地方式：
 
 ```text
-1. internal/hot/redis_repository.go  PendingViews      HGetAll + 解析 + 截断
-2. internal/hot/redis_repository.go  AckPendingView    HDel（field 必须是十进制 videoID）
-3. internal/video/repository.go      AddViewCount      一条 UPDATE 自增 + WHERE id
+1. PendingViews      HGetAll 全量读回，解析 field/value，
+                     脏数据跳过并记 Warn，最后按 limit 截断
+2. AckPendingView    HDel，field 用普通十进制 videoID（必须和 Lua 里 HINCRBY 一致）
+3. AddViewCount      一条 UPDATE 做原子自增 + WHERE id，
+                     RowsAffected == 0 按成功处理
 ```
 
-验收方式：本机 Redis 可用时跑
+验证方式：本机 Redis 可用时跑验收测试（测试覆盖脏数据跳过、
+limit 截断、重复 ack 幂等）：
 
 ```text
 TEST_REDIS_ADDR=<addr> TEST_REDIS_DB=15 TEST_REDIS_PASSWORD=<pass> \
   go test -run PendingViewsIntegration ./internal/hot/
 ```
 
-现在是红的（因为方法还没实现），实现完就会变绿。
-
-注意：在这三个方法填好之前不要重建 api 镜像，否则 Worker 每 5 秒会打一条
-“尚未实现”的错误日志。
+待办：`videos.view_count` 目前只写不读，详情接口还没有暴露播放量。
+另外 `RedisRepository` 的 logger 现在用的是 `slog.Default()`，
+和 main 里注入的应用 logger 不是同一个（输出会走默认 handler），
+按项目的显式依赖注入约定应该改成构造参数传入。
 
 已确定的做法（方案 A，宁可多算不可少算）：
 

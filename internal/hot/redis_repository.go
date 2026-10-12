@@ -2,8 +2,8 @@ package hot
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -34,12 +34,14 @@ const defaultViewDedupTTL = 5 * time.Minute
 
 type RedisRepository struct {
 	client       *redis.Client
+	logger       *slog.Logger
 	viewDedupTTL time.Duration
 }
 
 func NewRedisRepository(client *redis.Client) *RedisRepository {
 	return &RedisRepository{
 		client:       client,
+		logger:       slog.Default(),
 		viewDedupTTL: defaultViewDedupTTL,
 	}
 }
@@ -50,15 +52,12 @@ var _ PendingViewStore = (*RedisRepository)(nil)
 
 // PendingViews 读取最多 limit 条待回写的浏览量增量。
 //
-// TODO(阶段 9.5)：这里由你实现。提示：
+// 脏数据（field 不是数字、value 不是整数）会被跳过并记日志：
+// 一条脏数据不应该把整个批次卡死。
 //
-//  1. 数据在 PendingViewsKey() 这个 Hash 里，field 是 videoID，value 是增量。
-//     第一版可以直接 HGetAll 全量读回来再截断；如果 Hash 很大，
-//     应该改用 HScan 分批，避免一次性把几万个 field 拉进内存。
-//  2. field 用 strconv.ParseUint 转成 uint64，value 用 strconv.ParseInt。
-//     解析失败的条目说明是脏数据，必须跳过并记录，不能让一条脏数据
-//     把整个批次卡死。
-//  3. 返回 map[uint64]int64，条数不要超过 limit。
+// HGetAll 会把整个 Hash 一次读回来再按 limit 截断，所以截断掉的是哪几条
+// 是随机的。当前量级下没有影响（处理过的条目每轮都会 ack 掉），
+// 但 Hash 长到几万条时应该改用 HSCAN 分批读，避免一次性拉进内存。
 func (r *RedisRepository) PendingViews(
 	ctx context.Context,
 	limit int,
@@ -66,23 +65,53 @@ func (r *RedisRepository) PendingViews(
 	if limit <= 0 {
 		return map[uint64]int64{}, nil
 	}
-	return nil, errors.New("PendingViews 尚未实现：见 TODO(阶段 9.5)")
+
+	raw, err := r.client.HGetAll(ctx, PendingViewsKey()).Result()
+	if err != nil {
+		return nil, fmt.Errorf("pending views: HGETALL: %w", err)
+	}
+
+	result := make(map[uint64]int64, len(raw))
+	for field, value := range raw {
+		videoID, err := strconv.ParseUint(field, 10, 64)
+		if err != nil {
+			r.logger.Warn("pending views: parse video ID failed", "field", field, "error", err)
+			continue
+		}
+
+		delta, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			r.logger.Warn("pending views: parse delta failed", "value", value, "error", err)
+			continue
+		}
+
+		result[videoID] = delta
+
+		if len(result) >= limit {
+			break
+		}
+	}
+
+	return result, nil
 }
 
 // AckPendingView 在增量成功落库后，删除对应的 Hash 字段。
 //
-// TODO(阶段 9.5)：这里由你实现。提示：
+// HDEL 的 field 必须和 HINCRBY 时完全一致：普通十进制 videoID
+// （见 recordViewScript 的 ARGV[1]）。格式不一致会删不掉，
+// 增量被反复累加，这是这类代码最容易踩的坑。
 //
-//  1. HDEL 的 field 必须和 HINCRBY 时用的完全一致：RecordView 的 Lua 里
-//     写的是十进制 videoID（见 recordViewScript 的 ARGV[1]）。
-//     格式不一致会导致删不掉，增量会被反复累加 —— 这是这类代码最常见的 bug。
-//  2. 删除后可以检查返回值确认确实删掉了一条，删 0 条说明它已经被别的
-//     实例处理过了，这种情况按成功处理即可（幂等）。
+// 删 0 条说明已经被别的实例处理过，按成功处理即可（幂等）。
 func (r *RedisRepository) AckPendingView(ctx context.Context, videoID uint64) error {
 	if videoID == 0 {
 		return fmt.Errorf("ack pending view: video ID is zero: %w", ErrInvalidInput)
 	}
-	return errors.New("AckPendingView 尚未实现：见 TODO(阶段 9.5)")
+
+	field := strconv.FormatUint(videoID, 10)
+	if err := r.client.HDel(ctx, PendingViewsKey(), field).Err(); err != nil {
+		return fmt.Errorf("ack pending view: HDEL: %w", err)
+	}
+	return nil
 }
 
 func (r *RedisRepository) RecordView(
