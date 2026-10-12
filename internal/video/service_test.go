@@ -1,7 +1,9 @@
 package video
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"log/slog"
@@ -16,12 +18,37 @@ import (
 	"go-feed-system/pkg/storage"
 )
 
+// ftypHeader 构造一个真实结构的 ISO-BMFF ftyp box。
+//
+// 上传校验现在依赖内容嗅探，所以测试数据必须是真头，
+// 不能像以前那样随手拼一段字符串。
+func ftypHeader(major string, compatible ...string) []byte {
+	var brands bytes.Buffer
+	brands.WriteString(major)
+	brands.Write([]byte{0x00, 0x00, 0x02, 0x00}) // minor_version
+	for _, brand := range compatible {
+		brands.WriteString(brand)
+	}
+
+	size := 8 + brands.Len()
+	header := make([]byte, 0, size)
+	header = binary.BigEndian.AppendUint32(header, uint32(size))
+	header = append(header, "ftyp"...)
+	header = append(header, brands.Bytes()...)
+	return header
+}
+
 func TestService_Upload(t *testing.T) {
-	validContent := strings.NewReader("this is a fake mp4 video content")
+	mp4Content := append(ftypHeader("isom", "iso2", "avc1", "mp41"), []byte("payload")...)
+	movContent := append(ftypHeader("qt  ", "qt  "), []byte("payload")...)
+	m4vContent := append(ftypHeader("M4V ", "M4V ", "M4A ", "isom"), []byte("payload")...)
+	webmContent := append([]byte{0x1A, 0x45, 0xDF, 0xA3}, []byte("payload")...)
+	textContent := []byte("this is not a video at all")
 
 	tests := []struct {
 		name              string
 		input             UploadInput
+		content           []byte
 		mockRepoCreate    func(ctx context.Context, video *Video) error
 		mockStorageSave   func(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error
 		mockStorageDelete func(ctx context.Context, key string) error
@@ -29,20 +56,98 @@ func TestService_Upload(t *testing.T) {
 		wantAnyErr        bool
 		wantSaveCount     int
 		wantDeleteCount   int
+		wantContentType   string
+		wantKeySuffix     string
 	}{
 		{
-			name: "成功上传",
+			name: "成功上传 mp4",
 			input: UploadInput{
 				AuthorID:         1,
 				Title:            "测试视频",
 				OriginalFilename: "test.mp4",
 				ContentType:      "video/mp4",
 				SizeBytes:        1024,
-				Content:          validContent,
 			},
-			wantErr:         nil,
+			content:         mp4Content,
 			wantSaveCount:   1,
 			wantDeleteCount: 0,
+			wantContentType: "video/mp4",
+			wantKeySuffix:   ".mp4",
+		},
+		{
+			name: "客户端声明 application/octet-stream 也能上传",
+			input: UploadInput{
+				AuthorID:         1,
+				Title:            "测试视频",
+				OriginalFilename: "test.mp4",
+				ContentType:      "application/octet-stream",
+				SizeBytes:        1024,
+			},
+			content:         mp4Content,
+			wantSaveCount:   1,
+			wantDeleteCount: 0,
+			wantContentType: "video/mp4",
+			wantKeySuffix:   ".mp4",
+		},
+		{
+			name: "扩展名与真实容器不一致时按内容放行",
+			input: UploadInput{
+				AuthorID:         1,
+				Title:            "测试视频",
+				OriginalFilename: "test.mov",
+				ContentType:      "video/quicktime",
+				SizeBytes:        1024,
+			},
+			content:         mp4Content,
+			wantSaveCount:   1,
+			wantDeleteCount: 0,
+			wantContentType: "video/mp4",
+			wantKeySuffix:   ".mp4",
+		},
+		{
+			name: "真实 mov 内容",
+			input: UploadInput{
+				AuthorID:         1,
+				Title:            "测试视频",
+				OriginalFilename: "test.mov",
+				ContentType:      "video/quicktime",
+				SizeBytes:        1024,
+			},
+			content:         movContent,
+			wantSaveCount:   1,
+			wantDeleteCount: 0,
+			wantContentType: "video/quicktime",
+			wantKeySuffix:   ".mov",
+		},
+		{
+			name: "m4v 归并为 video/mp4",
+			input: UploadInput{
+				AuthorID:         1,
+				Title:            "测试视频",
+				OriginalFilename: "test.m4v",
+				ContentType:      "video/x-m4v",
+				SizeBytes:        1024,
+			},
+			content:         m4vContent,
+			wantSaveCount:   1,
+			wantDeleteCount: 0,
+			wantContentType: "video/mp4",
+			wantKeySuffix:   ".mp4",
+		},
+		{
+			name: "真实 webm 内容",
+			input: UploadInput{
+				AuthorID:         1,
+				Title:            "测试视频",
+				OriginalFilename: "test.webm",
+				ContentType:      "video/webm",
+				SizeBytes:        1024,
+			},
+			content:         webmContent,
+			wantSaveCount:   1,
+			wantDeleteCount: 0,
+			wantContentType: "video/webm",
+			wantKeySuffix:   ".webm",
 		},
 		{
 			name: "非法文件后缀",
@@ -52,22 +157,36 @@ func TestService_Upload(t *testing.T) {
 				OriginalFilename: "test.exe",
 				ContentType:      "video/mp4",
 				SizeBytes:        1024,
-				Content:          validContent,
 			},
+			content:         mp4Content,
 			wantErr:         ErrUnsupportedMediaType,
 			wantSaveCount:   0,
 			wantDeleteCount: 0,
 		},
 		{
-			name: "非法 Content-Type",
+			name: "客户端声明 image/png 被粗筛拒绝",
 			input: UploadInput{
 				AuthorID:         1,
 				Title:            "测试视频",
 				OriginalFilename: "test.mp4",
-				ContentType:      "application/octet-stream",
+				ContentType:      "image/png",
 				SizeBytes:        1024,
-				Content:          validContent,
 			},
+			content:         mp4Content,
+			wantErr:         ErrUnsupportedMediaType,
+			wantSaveCount:   0,
+			wantDeleteCount: 0,
+		},
+		{
+			name: "扩展名对但内容不是视频",
+			input: UploadInput{
+				AuthorID:         1,
+				Title:            "测试视频",
+				OriginalFilename: "test.mp4",
+				ContentType:      "video/mp4",
+				SizeBytes:        1024,
+			},
+			content:         textContent,
 			wantErr:         ErrUnsupportedMediaType,
 			wantSaveCount:   0,
 			wantDeleteCount: 0,
@@ -80,8 +199,8 @@ func TestService_Upload(t *testing.T) {
 				OriginalFilename: "test.mp4",
 				ContentType:      "video/mp4",
 				SizeBytes:        MaxUploadSizeBytes + 1,
-				Content:          validContent,
 			},
+			content:         mp4Content,
 			wantErr:         ErrFileTooLarge,
 			wantSaveCount:   0,
 			wantDeleteCount: 0,
@@ -94,8 +213,8 @@ func TestService_Upload(t *testing.T) {
 				OriginalFilename: "test.mp4",
 				ContentType:      "video/mp4",
 				SizeBytes:        1024,
-				Content:          validContent,
 			},
+			content: mp4Content,
 			mockStorageSave: func(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
 				return errors.New("disk full")
 			},
@@ -112,15 +231,15 @@ func TestService_Upload(t *testing.T) {
 				OriginalFilename: "test.mp4",
 				ContentType:      "video/mp4",
 				SizeBytes:        1024,
-				Content:          validContent,
 			},
+			content: mp4Content,
 			mockRepoCreate: func(ctx context.Context, video *Video) error {
 				return errors.New("mysql connection lost")
 			},
 			wantErr:         nil, // 只要 err != nil 即可
 			wantAnyErr:      true,
 			wantSaveCount:   1,
-			wantDeleteCount: 1, // ✅ 核心断言：必须调用一次 Delete
+			wantDeleteCount: 1, // 核心断言：必须调用一次 Delete
 		},
 		{
 			name: "数据库冲突，必须触发文件补偿删除",
@@ -130,14 +249,14 @@ func TestService_Upload(t *testing.T) {
 				OriginalFilename: "test.mp4",
 				ContentType:      "video/mp4",
 				SizeBytes:        1024,
-				Content:          validContent,
 			},
+			content: mp4Content,
 			mockRepoCreate: func(ctx context.Context, video *Video) error {
 				return ErrConflict
 			},
 			wantErr:         ErrConflict,
 			wantSaveCount:   1,
-			wantDeleteCount: 1, // ✅ 核心断言
+			wantDeleteCount: 1, // 核心断言
 		},
 		{
 			name: "作者 ID 为 0",
@@ -147,8 +266,8 @@ func TestService_Upload(t *testing.T) {
 				OriginalFilename: "test.mp4",
 				ContentType:      "video/mp4",
 				SizeBytes:        1024,
-				Content:          validContent,
 			},
+			content:         mp4Content,
 			wantErr:         ErrInvalidInput,
 			wantSaveCount:   0,
 			wantDeleteCount: 0,
@@ -157,9 +276,23 @@ func TestService_Upload(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			var createdVideo *Video
+
+			// 每个用例都必须有独立的 reader。
+			// reader 是一次性游标，如果在表定义里共用一个，
+			// 第一个用例就会把它读空，后面的用例只会看到 EOF。
+			input := tt.input
+			input.Content = bytes.NewReader(tt.content)
+
 			// 构造 Fake 依赖
 			repo := &fakeVideoRepository{
-				CreateFunc: tt.mockRepoCreate,
+				CreateFunc: func(ctx context.Context, video *Video) error {
+					createdVideo = video
+					if tt.mockRepoCreate != nil {
+						return tt.mockRepoCreate(ctx, video)
+					}
+					return nil
+				},
 			}
 			storageMock := &fakeObjectStorage{
 				SaveFunc:   tt.mockStorageSave,
@@ -170,7 +303,7 @@ func TestService_Upload(t *testing.T) {
 			svc := NewService(repo, storageMock, &fakeUserReader{}, logger)
 
 			// 执行
-			_, err := svc.Upload(context.Background(), tt.input)
+			_, err := svc.Upload(context.Background(), input)
 
 			// 断言错误 (如果是特殊错误，需要精准断言)
 			if tt.wantErr != nil {
@@ -190,6 +323,28 @@ func TestService_Upload(t *testing.T) {
 			}
 			if storageMock.DeleteCount != tt.wantDeleteCount {
 				t.Errorf("expected Delete to be called %d times, got %d", tt.wantDeleteCount, storageMock.DeleteCount)
+			}
+
+			// 入库的类型和存储键的后缀必须来自嗅探结果，而不是客户端声明
+			if tt.wantContentType != "" {
+				if createdVideo == nil {
+					t.Fatal("expected a created video")
+				}
+				if createdVideo.ContentType != tt.wantContentType {
+					t.Errorf(
+						"expected stored content type %q, got %q",
+						tt.wantContentType,
+						createdVideo.ContentType,
+					)
+				}
+			}
+			if tt.wantKeySuffix != "" &&
+				!strings.HasSuffix(storageMock.LastKey, tt.wantKeySuffix) {
+				t.Errorf(
+					"expected storage key suffix %q, got %q",
+					tt.wantKeySuffix,
+					storageMock.LastKey,
+				)
 			}
 		})
 	}
@@ -217,7 +372,9 @@ func TestService_Upload_BuildsOutboxEvent(t *testing.T) {
 		OriginalFilename: "test.mp4",
 		ContentType:      "video/mp4",
 		SizeBytes:        1024,
-		Content:          strings.NewReader("fake video"),
+		Content: bytes.NewReader(
+			append(ftypHeader("isom", "iso2", "avc1", "mp41"), []byte("fake video")...),
+		),
 	})
 	if err != nil {
 		t.Fatalf("upload video: %v", err)
