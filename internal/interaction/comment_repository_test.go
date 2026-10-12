@@ -101,9 +101,12 @@ func TestGORMCommentRepository(t *testing.T) {
 		}
 
 		// 1. 删除评论
-		err := repo.Delete(context.Background(), c.ID, userID)
+		deleted, err := repo.Delete(context.Background(), c.ID, userID)
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
+		}
+		if !deleted {
+			t.Fatal("expected comment to be deleted")
 		}
 
 		// 2. 验证软删除：查询不到
@@ -121,9 +124,12 @@ func TestGORMCommentRepository(t *testing.T) {
 		}
 
 		// 3. 重复删除（幂等）
-		err = repo.Delete(context.Background(), c.ID, userID)
+		deleted, err = repo.Delete(context.Background(), c.ID, userID)
 		if err != nil {
 			t.Fatalf("expected idempotent delete, got %v", err)
+		}
+		if deleted {
+			t.Fatal("expected repeated delete to affect zero rows")
 		}
 	})
 
@@ -138,9 +144,12 @@ func TestGORMCommentRepository(t *testing.T) {
 		}
 
 		// 用一个不匹配的 userID 尝试删除
-		err := repo.Delete(context.Background(), c.ID, userID+1)
+		deleted, err := repo.Delete(context.Background(), c.ID, userID+1)
 		if err != nil {
 			t.Fatalf("expected no error (idempotent), got %v", err)
+		}
+		if deleted {
+			t.Fatal("expected wrong author to delete zero rows")
 		}
 
 		// 验证评论依然存在

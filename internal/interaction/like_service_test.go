@@ -14,7 +14,7 @@ var errDBError = errors.New("database connection lost")
 // 1. Fake LikeRepository
 type fakeLikeRepository struct {
 	CreateFunc              func(ctx context.Context, userID, videoID uint64) error
-	DeleteFunc              func(ctx context.Context, userID, videoID uint64) error
+	DeleteFunc              func(ctx context.Context, userID, videoID uint64) (bool, error)
 	ExistsFunc              func(ctx context.Context, userID, videoID uint64) (bool, error)
 	CountByVideoFunc        func(ctx context.Context, videoID uint64) (int64, error)
 	CountByVideoIDsFunc     func(ctx context.Context, videoIDs []uint64) (map[uint64]int64, error)
@@ -47,14 +47,14 @@ func (f *fakeLikeRepository) Create(ctx context.Context, userID, videoID uint64)
 	return nil
 }
 
-func (f *fakeLikeRepository) Delete(ctx context.Context, userID, videoID uint64) error {
+func (f *fakeLikeRepository) Delete(ctx context.Context, userID, videoID uint64) (bool, error) {
 	f.DeleteCallCount++
 	f.LastUserID = userID   // 记录
 	f.LastVideoID = videoID // 记录
 	if f.DeleteFunc != nil {
 		return f.DeleteFunc(ctx, userID, videoID)
 	}
-	return nil
+	return true, nil
 }
 
 func (f *fakeLikeRepository) Exists(ctx context.Context, userID, videoID uint64) (bool, error) {
@@ -212,7 +212,7 @@ func TestLikeService_Like(t *testing.T) {
 				},
 			}
 
-			svc := NewLikeService(likeRepo, videoReader)
+			svc := NewLikeService(likeRepo, videoReader, nil)
 			err := svc.Like(context.Background(), tt.userID, tt.videoID)
 
 			// 断言错误
@@ -252,6 +252,7 @@ func TestLikeService_Unlike(t *testing.T) {
 		userID         uint64
 		videoID        uint64
 		mockDeleteErr  error
+		mockDeleted    bool
 		wantErr        error
 		wantVideoCall  int
 		wantDeleteCall int
@@ -263,6 +264,7 @@ func TestLikeService_Unlike(t *testing.T) {
 			wantErr:        nil,
 			wantVideoCall:  0, // 核心：Unlike 不应该查视频
 			wantDeleteCall: 1,
+			mockDeleted:    true,
 		},
 		{
 			name:           "取消不存在的点赞记录（幂等）",
@@ -271,6 +273,7 @@ func TestLikeService_Unlike(t *testing.T) {
 			wantErr:        nil,
 			wantVideoCall:  0,
 			wantDeleteCall: 1,
+			mockDeleted:    false,
 		},
 		{
 			name:           "userID 为 0，返回 ErrInvalidInput",
@@ -296,6 +299,7 @@ func TestLikeService_Unlike(t *testing.T) {
 			wantErr:        errDBError,
 			wantVideoCall:  0,
 			wantDeleteCall: 1,
+			mockDeleted:    false,
 		},
 	}
 
@@ -307,12 +311,12 @@ func TestLikeService_Unlike(t *testing.T) {
 				},
 			}
 			likeRepo := &fakeLikeRepository{
-				DeleteFunc: func(ctx context.Context, userID, videoID uint64) error {
-					return tt.mockDeleteErr
+				DeleteFunc: func(ctx context.Context, userID, videoID uint64) (bool, error) {
+					return tt.mockDeleted, tt.mockDeleteErr
 				},
 			}
 
-			svc := NewLikeService(likeRepo, videoReader)
+			svc := NewLikeService(likeRepo, videoReader, nil)
 			err := svc.Unlike(context.Background(), tt.userID, tt.videoID)
 
 			// 断言错误
@@ -471,7 +475,7 @@ func TestLikeService_GetState(t *testing.T) {
 				},
 			}
 
-			svc := NewLikeService(likeRepo, videoReader)
+			svc := NewLikeService(likeRepo, videoReader, nil)
 			state, err := svc.GetState(context.Background(), tt.userID, tt.videoID)
 
 			// 断言错误
@@ -582,7 +586,7 @@ func TestLikeService_GetLikeState(t *testing.T) {
 				},
 			}
 
-			svc := NewLikeService(likeRepo, videoReader)
+			svc := NewLikeService(likeRepo, videoReader, nil)
 			count, isLikedBy, err := svc.GetLikeState(context.Background(), tt.viewerID, tt.videoID)
 
 			if !errors.Is(err, tt.wantErr) {
@@ -636,7 +640,7 @@ func TestLikeService_CountByVideoIDs(t *testing.T) {
 					return tt.mockCounts, tt.mockErr
 				},
 			}
-			svc := NewLikeService(repo, nil)
+			svc := NewLikeService(repo, nil, nil)
 
 			counts, err := svc.CountByVideoIDs(context.Background(), tt.videoIDs)
 			if !errors.Is(err, tt.wantErr) {
@@ -702,7 +706,7 @@ func TestLikeService_LikedVideoIDsByUser(t *testing.T) {
 					return tt.mockLiked, tt.mockErr
 				},
 			}
-			svc := NewLikeService(repo, nil)
+			svc := NewLikeService(repo, nil, nil)
 
 			liked, err := svc.LikedVideoIDsByUser(context.Background(), tt.userID, tt.videoIDs)
 			if !errors.Is(err, tt.wantErr) {

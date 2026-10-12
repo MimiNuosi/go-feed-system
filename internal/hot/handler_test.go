@@ -33,6 +33,10 @@ type fakeRecordViewService struct {
 	listPage   int
 	listVideos []RankedVideo
 	listHotErr error
+	videosByID []video.Video
+	userMap    map[uint64]*user.User
+	likeCounts map[uint64]int64
+	likedMap   map[uint64]bool
 }
 
 func (f *fakeRecordViewService) RecordView(
@@ -66,21 +70,21 @@ func (f *fakeRecordViewService) ListReadyByIDs(
 	ctx context.Context,
 	ids []uint64,
 ) ([]video.Video, error) {
-	return nil, nil
+	return f.videosByID, nil
 }
 
 func (f *fakeRecordViewService) GetByIDs(
 	ctx context.Context,
 	ids []uint64,
 ) (map[uint64]*user.User, error) {
-	return nil, nil
+	return f.userMap, nil
 }
 
 func (f *fakeRecordViewService) CountByVideoIDs(
 	ctx context.Context,
 	videoIDs []uint64,
 ) (map[uint64]int64, error) {
-	return nil, nil
+	return f.likeCounts, nil
 }
 
 func (f *fakeRecordViewService) LikedVideoIDsByUser(
@@ -88,7 +92,7 @@ func (f *fakeRecordViewService) LikedVideoIDsByUser(
 	userID uint64,
 	videoIDs []uint64,
 ) (map[uint64]bool, error) {
-	return nil, nil
+	return f.likedMap, nil
 }
 
 func TestHandler_RecordView(t *testing.T) {
@@ -243,7 +247,7 @@ func TestHandler_ListHot(t *testing.T) {
 			wantCalls:     1,
 			wantWindow:    WindowOneHour,
 			wantPageSize:  DefaultHotPageSize,
-			wantBody:      `"VideoID":3`,
+			wantBody:      `"id":3`,
 		},
 		{
 			name:         "page_size 裁剪到上限",
@@ -296,6 +300,21 @@ func TestHandler_ListHot(t *testing.T) {
 			service := &fakeRecordViewService{
 				listVideos: tt.serviceVideos,
 				listHotErr: tt.serviceErr,
+				videosByID: []video.Video{
+					{
+						ID:          3,
+						AuthorID:    10,
+						Title:       "hot video",
+						Description: "desc",
+						ContentType: "video/mp4",
+						CreatedAt:   time.Now(),
+						Status:      video.StatusReady,
+					},
+				},
+				userMap: map[uint64]*user.User{
+					10: {ID: 10, Username: "author"},
+				},
+				likeCounts: map[uint64]int64{3: 7},
 			}
 			handler := NewHandler(
 				service,

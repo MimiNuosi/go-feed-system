@@ -23,7 +23,7 @@ type LikeRepository interface {
 	//
 	// 删除不存在的记录也返回 nil，保证取消点赞幂等。
 	// 数据库错误需要包装上下文。
-	Delete(ctx context.Context, userID, videoID uint64) error
+	Delete(ctx context.Context, userID, videoID uint64) (bool, error)
 
 	// Exists 判断用户是否已经点赞视频。
 	Exists(ctx context.Context, userID, videoID uint64) (bool, error)
@@ -69,14 +69,16 @@ func (r *GORMLikeRepository) Create(ctx context.Context, userID, videoID uint64)
 	return nil
 }
 
-func (r *GORMLikeRepository) Delete(ctx context.Context, userID, videoID uint64) error {
-	err := r.db.WithContext(ctx).
+func (r *GORMLikeRepository) Delete(ctx context.Context, userID, videoID uint64) (bool, error) {
+	result := r.db.WithContext(ctx).
 		Where("user_id = ? AND video_id = ?", userID, videoID).
-		Delete(&Like{}).Error
-	if err != nil {
-		return fmt.Errorf("delete like: %w", err)
+		Delete(&Like{})
+
+	if result.Error != nil {
+		return false, fmt.Errorf("delete like: %w", result.Error)
 	}
-	return nil
+
+	return result.RowsAffected > 0, nil
 }
 
 func (r *GORMLikeRepository) Exists(ctx context.Context, userID, videoID uint64) (bool, error) {

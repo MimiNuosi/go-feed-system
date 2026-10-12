@@ -83,9 +83,12 @@ func TestGORMLikeRepository(t *testing.T) {
 		}
 
 		// 取消点赞
-		err := repo.Delete(context.Background(), userID, videoID)
+		deleted, err := repo.Delete(context.Background(), userID, videoID)
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
+		}
+		if !deleted {
+			t.Fatal("expected one like row to be deleted")
 		}
 	})
 
@@ -95,9 +98,12 @@ func TestGORMLikeRepository(t *testing.T) {
 		userID, videoID := createSeedData(t, tx)
 
 		// 直接取消不存在的点赞记录
-		err := repo.Delete(context.Background(), userID, videoID)
+		deleted, err := repo.Delete(context.Background(), userID, videoID)
 		if err != nil {
 			t.Fatalf("expected no error (idempotent delete), got %v", err)
+		}
+		if deleted {
+			t.Fatal("expected no like row to be deleted")
 		}
 	})
 

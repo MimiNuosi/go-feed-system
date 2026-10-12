@@ -23,6 +23,12 @@ redis.call("ZINCRBY", KEYS[4], 1, ARGV[2])
 return 1
 `)
 
+var addScoreScript = redis.NewScript(`
+redis.call("ZINCRBY", KEYS[1], ARGV[2], ARGV[1])
+redis.call("ZINCRBY", KEYS[2], ARGV[2], ARGV[1])
+return 1
+`)
+
 const defaultViewDedupTTL = 5 * time.Minute
 
 type RedisRepository struct {
@@ -38,6 +44,7 @@ func NewRedisRepository(client *redis.Client) *RedisRepository {
 }
 
 var _ RankingRepository = (*RedisRepository)(nil)
+var _ ScoreWriter = (*RedisRepository)(nil)
 
 func (r *RedisRepository) RecordView(
 	ctx context.Context,
@@ -156,6 +163,43 @@ func (r *RedisRepository) TopVideoIDs(
 	}
 
 	return rankedVideos, nil
+}
+
+func (r *RedisRepository) AddScore(
+	ctx context.Context,
+	videoID uint64,
+	delta int64,
+	at time.Time,
+) error {
+	if videoID == 0 {
+		return fmt.Errorf("add hot score: video ID is zero: %w", ErrInvalidInput)
+	}
+	if at.IsZero() {
+		return fmt.Errorf("add hot score: at is zero: %w", ErrInvalidInput)
+	}
+	if delta == 0 {
+		return nil
+	}
+
+	bucket1h, err := WindowOneHour.CurrentBucketKey(at)
+	if err != nil {
+		return fmt.Errorf("add hot score: build 1h bucket: %w", err)
+	}
+	bucket24h, err := WindowTwentyFourH.CurrentBucketKey(at)
+	if err != nil {
+		return fmt.Errorf("add hot score: build 24h bucket: %w", err)
+	}
+	_, err = addScoreScript.Run(
+		ctx,
+		r.client,
+		[]string{bucket1h, bucket24h},
+		formatVideoID(videoID),
+		delta,
+	).Int64()
+	if err != nil {
+		return fmt.Errorf("add hot score: run script: %w", err)
+	}
+	return nil
 }
 
 func formatVideoID(videoID uint64) string {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"go-feed-system/internal/user"
@@ -26,20 +27,23 @@ type CommentUserReader interface {
 }
 
 type CommentService struct {
-	comments CommentRepository
-	videos   VideoReader
-	users    CommentUserReader
+	comments  CommentRepository
+	videos    VideoReader
+	users     CommentUserReader
+	hotScores HotScoreRecorder
 }
 
 func NewCommentService(
 	comments CommentRepository,
 	videos VideoReader,
 	users CommentUserReader,
+	hotScores HotScoreRecorder,
 ) *CommentService {
 	return &CommentService{
-		comments: comments,
-		videos:   videos,
-		users:    users,
+		comments:  comments,
+		videos:    videos,
+		users:     users,
+		hotScores: hotScores,
 	}
 }
 
@@ -82,6 +86,7 @@ func (s *CommentService) Create(
 		return nil, fmt.Errorf("create comment: %w", err)
 	}
 
+	s.recordHotScore(ctx, videoID, 5)
 	// 5. 返回创建后的评论
 	return comment, nil
 }
@@ -199,9 +204,19 @@ func (s *CommentService) Delete(ctx context.Context, userID, commentID uint64) e
 	}
 
 	// 4. 执行软删除
-	if err := s.comments.Delete(ctx, commentID, userID); err != nil {
+	if deleted, err := s.comments.Delete(ctx, commentID, userID); err != nil {
 		return fmt.Errorf("delete comment: %w", err)
+	} else if !deleted {
+		return nil
 	}
 
+	s.recordHotScore(ctx, comment.VideoID, -5)
 	return nil
+}
+
+func (s *CommentService) recordHotScore(ctx context.Context, videoID uint64, delta int64) {
+	if s.hotScores == nil {
+		return
+	}
+	s.hotScores.AddScore(ctx, videoID, delta, time.Now())
 }

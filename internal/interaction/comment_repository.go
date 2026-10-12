@@ -30,7 +30,7 @@ type CommentRepository interface {
 	//
 	// 删除不存在的记录也返回 nil，保持幂等。
 	// 其他数据库错误需要保留调用链。
-	Delete(ctx context.Context, commentID, userID uint64) error
+	Delete(ctx context.Context, commentID, userID uint64) (bool, error)
 }
 
 type GORMCommentRepository struct {
@@ -83,15 +83,14 @@ func (r *GORMCommentRepository) ListByVideoID(
 	return comments, nil
 }
 
-func (r *GORMCommentRepository) Delete(ctx context.Context, commentID, userID uint64) error {
-	// 条件软删除：只能删除自己的评论
-	// GORM 遇到 gorm.DeletedAt 会自动把 Delete 转换为 UPDATE deleted_at = now()
-	err := r.db.WithContext(ctx).
+func (r *GORMCommentRepository) Delete(ctx context.Context, commentID, userID uint64) (bool, error) {
+	result := r.db.WithContext(ctx).
 		Where("id = ? AND user_id = ?", commentID, userID).
-		Delete(&Comment{}).Error
-	if err != nil {
-		return fmt.Errorf("delete comment: %w", err)
+		Delete(&Comment{})
+
+	if result.Error != nil {
+		return false, fmt.Errorf("delete comment: %w", result.Error)
 	}
-	// 删除 0 行也返回 nil，保持幂等
-	return nil
+
+	return result.RowsAffected > 0, nil
 }

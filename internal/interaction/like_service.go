@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"go-feed-system/internal/video"
 )
@@ -17,14 +18,20 @@ type VideoReader interface {
 }
 
 type LikeService struct {
-	likes  LikeRepository
-	videos VideoReader
+	likes     LikeRepository
+	videos    VideoReader
+	hotScores HotScoreRecorder
 }
 
-func NewLikeService(likes LikeRepository, videos VideoReader) *LikeService {
+func NewLikeService(
+	likes LikeRepository,
+	videos VideoReader,
+	hotScores HotScoreRecorder,
+) *LikeService {
 	return &LikeService{
-		likes:  likes,
-		videos: videos,
+		likes:     likes,
+		videos:    videos,
+		hotScores: hotScores,
 	}
 }
 
@@ -56,6 +63,7 @@ func (s *LikeService) Like(ctx context.Context, userID, videoID uint64) error {
 		return fmt.Errorf("like video: create like: %w", err)
 	}
 
+	s.recordHotScore(ctx, videoID, 3)
 	return nil
 }
 
@@ -67,11 +75,21 @@ func (s *LikeService) Unlike(ctx context.Context, userID, videoID uint64) error 
 
 	// 2. 直接调用 Delete（无需查视频）
 	// 原因：取消点赞的目标是“消除点赞状态”，视频是否存在不影响这个目标的达成
-	if err := s.likes.Delete(ctx, userID, videoID); err != nil {
+	if deleted, err := s.likes.Delete(ctx, userID, videoID); err != nil {
 		return fmt.Errorf("unlike video: delete like: %w", err)
+	} else if !deleted {
+		return nil
 	}
 
+	s.recordHotScore(ctx, videoID, -3)
 	return nil
+}
+
+func (s *LikeService) recordHotScore(ctx context.Context, videoID uint64, delta int64) {
+	if s.hotScores == nil {
+		return
+	}
+	s.hotScores.AddScore(ctx, videoID, delta, time.Now())
 }
 
 // LikeState 是视频详情和 Feed 展示需要的组合状态。

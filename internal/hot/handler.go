@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"go-feed-system/internal/user"
 	"go-feed-system/internal/video"
 	"go-feed-system/pkg/authctx"
+	"go-feed-system/pkg/feedmodel"
 	"go-feed-system/pkg/httpx"
 	"go-feed-system/pkg/requestid"
 )
@@ -106,7 +108,7 @@ func (h *Handler) RecordView(c *gin.Context) {
 		time.Now(),
 	)
 	if err != nil {
-		h.handleListHotError(c, err)
+		h.handleError(c, err)
 		return
 	}
 
@@ -119,6 +121,11 @@ func (h *Handler) viewerKey(c *gin.Context) string {
 		return "user:" + strconv.FormatUint(userID, 10)
 	}
 
+	// TODO: 匿名身份的去重精度有限。
+	// 路由层已经关掉 XFF 采信，所以同一个部署里的匿名请求都来自同一个
+	// 对端地址，这里实际等价于"整个部署共用一个匿名身份"。
+	// 后续应改为客户端设备 ID（不可信，只能当线索）+ 限流兜底，
+	// 见阶段 9 的匿名浏览去重与限流任务。
 	clientIP := strings.TrimSpace(c.ClientIP())
 	if clientIP == "" {
 		clientIP = "unknown"
@@ -127,18 +134,18 @@ func (h *Handler) viewerKey(c *gin.Context) string {
 	return "ip:" + hex.EncodeToString(sum[:])
 }
 
-func (h *Handler) handleListHotError(c *gin.Context, err error) {
+func (h *Handler) handleError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, ErrInvalidInput):
 		httpx.Abort(
 			c,
 			http.StatusBadRequest,
 			httpx.ErrorCodeInvalidArgument,
-			"invalid hot feed request",
+			"invalid hot request",
 		)
 	default:
 		h.logger.Error(
-			"list hot feed failed",
+			"hot request failed",
 			"request_id", requestid.FromContext(c.Request.Context()),
 			"error", err,
 		)
@@ -152,11 +159,6 @@ func (h *Handler) handleListHotError(c *gin.Context, err error) {
 }
 
 func (h *Handler) ListHot(c *gin.Context) {
-	// ---- 步骤 1：解析 window ----
-	// TODO(你来写)：
-	// 1. c.Query("window") 拿到字符串。
-	// 2. hot.ParseWindow(raw) 转成 Window。
-	// 3. 失败 → 400。
 	raw := c.Query("window")
 	window, err := ParseWindow(raw)
 	if err != nil {
@@ -168,12 +170,6 @@ func (h *Handler) ListHot(c *gin.Context) {
 		)
 		return
 	}
-	// ---- 步骤 2：解析 page_size ----
-	// TODO(你来写)：
-	// 1. c.Query("page_size")，如果是空字符串，用 DefaultHotPageSize。
-	// 2. 否则 strconv.Atoi。
-	// 3. <=0 用默认，> MaxHotPageSize 裁剪到 MaxHotPageSize。
-	// 4. 解析失败 → 400。
 	rawPageSize := c.Query("page_size")
 	if rawPageSize == "" {
 		rawPageSize = strconv.Itoa(DefaultHotPageSize)
@@ -193,10 +189,6 @@ func (h *Handler) ListHot(c *gin.Context) {
 	} else if pageSize > MaxHotPageSize {
 		pageSize = MaxHotPageSize
 	}
-	// ---- 步骤 3：cursor ----
-	// TODO(你来写)：
-	// 1. c.Query("cursor")，非空就返回 400（"cursor not supported yet"）。
-	// 2. 空字符串时传 nil 给 service。
 	cursor := c.Query("cursor")
 	if cursor != "" {
 		httpx.Abort(
@@ -207,25 +199,6 @@ func (h *Handler) ListHot(c *gin.Context) {
 		)
 		return
 	}
-	// ---- 步骤 4：调 service ----
-	// TODO(你来写)：
-	// ranked, err := h.listHotService.ListHot(
-	//     c.Request.Context(),
-	//     window,
-	//     time.Now(),
-	//     nil,   // cursor
-	//     pageSize,
-	// )
-	// if err != nil {
-	//     h.handleListHotError(c, err)
-	//     return
-	// }
-
-	// ---- 步骤 5：暂时先简单返回 ranked ----
-	// TODO(你来写)：
-	// c.JSON(http.StatusOK, ranked)
-	//
-	// 注意：这里先不做聚合。等接口稳定后，再加 VideoReader/UserReader/LikeReader 的调用。
 	ranked, err := h.listHotService.ListHot(
 		c.Request.Context(),
 		window,
@@ -234,9 +207,96 @@ func (h *Handler) ListHot(c *gin.Context) {
 		pageSize,
 	)
 	if err != nil {
-		h.handleListHotError(c, err)
+		h.handleError(c, err)
 		return
 	}
 
-	c.JSON(http.StatusOK, ranked)
+	page, err := h.buildHotPage(c.Request.Context(), ranked)
+	if err != nil {
+		h.handleError(c, err)
+		return
+	}
+
+	c.JSON(http.StatusOK, page)
+}
+
+func (h *Handler) buildHotPage(
+	ctx context.Context,
+	ranked []RankedVideo,
+) (*feedmodel.Page, error) {
+	page := &feedmodel.Page{
+		Items:   []feedmodel.Item{},
+		HasMore: false,
+	}
+	if len(ranked) == 0 {
+		return page, nil
+	}
+
+	videoIDs := make([]uint64, 0, len(ranked))
+	for _, item := range ranked {
+		videoIDs = append(videoIDs, item.VideoID)
+	}
+
+	videos, err := h.videos.ListReadyByIDs(ctx, videoIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list hot feed: list videos: %w", err)
+	}
+
+	videoMap := make(map[uint64]video.Video, len(videos))
+	authorIDSet := make(map[uint64]struct{}, len(videos))
+	for _, item := range videos {
+		videoMap[item.ID] = item
+		authorIDSet[item.AuthorID] = struct{}{}
+	}
+
+	authorIDs := make([]uint64, 0, len(authorIDSet))
+	for authorID := range authorIDSet {
+		authorIDs = append(authorIDs, authorID)
+	}
+
+	userMap, err := h.users.GetByIDs(ctx, authorIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list hot feed: get authors: %w", err)
+	}
+
+	likeCountMap, err := h.likes.CountByVideoIDs(ctx, videoIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list hot feed: count likes: %w", err)
+	}
+
+	likedMap := map[uint64]bool{}
+	if userID, ok := authctx.UserID(ctx); ok && userID > 0 {
+		likedMap, err = h.likes.LikedVideoIDsByUser(ctx, userID, videoIDs)
+		if err != nil {
+			return nil, fmt.Errorf("list hot feed: get liked status: %w", err)
+		}
+	}
+
+	for _, rankedVideo := range ranked {
+		videoItem, ok := videoMap[rankedVideo.VideoID]
+		if !ok {
+			continue
+		}
+
+		username := "已注销用户"
+		if author, ok := userMap[videoItem.AuthorID]; ok && author != nil {
+			username = author.Username
+		}
+
+		page.Items = append(page.Items, feedmodel.Item{
+			ID: videoItem.ID,
+			Author: feedmodel.AuthorInfo{
+				ID:       videoItem.AuthorID,
+				Username: username,
+			},
+			Title:       videoItem.Title,
+			Description: videoItem.Description,
+			ContentType: videoItem.ContentType,
+			CreatedAt:   videoItem.CreatedAt,
+			LikeCount:   likeCountMap[videoItem.ID],
+			IsLikedBy:   likedMap[videoItem.ID],
+		})
+	}
+
+	return page, nil
 }

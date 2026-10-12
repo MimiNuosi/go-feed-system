@@ -139,12 +139,25 @@ func run() error {
 		}
 	}()
 
+	hotRepository := hot.NewRedisRepository(redisClient)
+	hotService := hot.NewService(hotRepository, logger)
+	hotScoreRecorder := hot.NewScoreRecorder(hotRepository, logger)
+
 	likeRepository := interaction.NewGORMLikeRepository(db)
-	likeService := interaction.NewLikeService(likeRepository, videoService)
+	likeService := interaction.NewLikeService(
+		likeRepository,
+		videoService,
+		hotScoreRecorder,
+	)
 	likeHandler := interaction.NewLikeHandler(likeService, logger)
 
 	commentRepository := interaction.NewGORMCommentRepository(db)
-	commentService := interaction.NewCommentService(commentRepository, videoService, userService)
+	commentService := interaction.NewCommentService(
+		commentRepository,
+		videoService,
+		userService,
+		hotScoreRecorder,
+	)
 	commentHandler := interaction.NewCommentHandler(commentService, logger)
 
 	videoHandler := video.NewHandler(videoService, likeService)
@@ -161,8 +174,6 @@ func run() error {
 	)
 	feedHandler := feed.NewHandler(feedService, logger)
 
-	hotRepository := hot.NewRedisRepository(redisClient)
-	hotService := hot.NewService(hotRepository, logger)
 	hotHandler := hot.NewHandler(
 		hotService,
 		hotService,

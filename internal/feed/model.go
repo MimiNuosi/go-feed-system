@@ -1,6 +1,10 @@
 package feed
 
-import "time"
+import (
+	"time"
+
+	"go-feed-system/pkg/feedmodel"
+)
 
 // Cursor 是 Feed 的复合游标。
 //
@@ -22,26 +26,10 @@ type VideoRecord struct {
 	CreatedAt   time.Time `gorm:"column:created_at"`
 }
 
-type AuthorInfo struct {
-	ID       uint64 `json:"id"`
-	Username string `json:"username"`
-}
+type AuthorInfo = feedmodel.AuthorInfo
 
 // Item 是 Feed 返回给前端的单条数据。
-type Item struct {
-	ID          uint64     `json:"id"`
-	Author      AuthorInfo `json:"author"`
-	Title       string     `json:"title"`
-	Description string     `json:"description"`
-	ContentType string     `json:"content_type"`
-	CreatedAt   time.Time  `json:"created_at"`
-	LikeCount   int64      `json:"like_count"`
-	IsLikedBy   bool       `json:"is_liked_by"`
-}
+type Item = feedmodel.Item
 
 // Page 是 Feed 的游标分页结果。
-type Page struct {
-	Items      []Item `json:"items"`
-	NextCursor string `json:"next_cursor,omitempty"`
-	HasMore    bool   `json:"has_more"`
-}
+type Page = feedmodel.Page

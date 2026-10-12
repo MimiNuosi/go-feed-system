@@ -15,7 +15,7 @@ type fakeCommentRepository struct {
 	CreateFunc        func(ctx context.Context, comment *Comment) error
 	FindByIDFunc      func(ctx context.Context, id uint64) (*Comment, error)
 	ListByVideoIDFunc func(ctx context.Context, videoID, lastID uint64, limit int) ([]Comment, error)
-	DeleteFunc        func(ctx context.Context, commentID, userID uint64) error
+	DeleteFunc        func(ctx context.Context, commentID, userID uint64) (bool, error)
 
 	LastUserID          uint64
 	LastVideoID         uint64
@@ -57,14 +57,14 @@ func (f *fakeCommentRepository) ListByVideoID(ctx context.Context, videoID, last
 	return []Comment{}, nil
 }
 
-func (f *fakeCommentRepository) Delete(ctx context.Context, commentID, userID uint64) error {
+func (f *fakeCommentRepository) Delete(ctx context.Context, commentID, userID uint64) (bool, error) {
 	f.DeleteCallCount++
 	f.LastDeleteCommentID = commentID
 	f.LastDeleteUserID = userID
 	if f.DeleteFunc != nil {
 		return f.DeleteFunc(ctx, commentID, userID)
 	}
-	return nil
+	return true, nil
 }
 
 // 2. Fake CommentUserReader
@@ -181,7 +181,7 @@ func TestCommentService_Create(t *testing.T) {
 				},
 			}
 
-			svc := NewCommentService(commentRepo, videoReader, nil)
+			svc := NewCommentService(commentRepo, videoReader, nil, nil)
 			_, err := svc.Create(context.Background(), tt.userID, tt.videoID, tt.content)
 
 			if tt.wantErr != nil {
@@ -382,7 +382,7 @@ func TestCommentService_List(t *testing.T) {
 				},
 			}
 
-			svc := NewCommentService(commentRepo, videoReader, userReader)
+			svc := NewCommentService(commentRepo, videoReader, userReader, nil)
 			page, err := svc.List(context.Background(), tt.videoID, tt.cursor, tt.pageSize)
 
 			if tt.wantErr != nil {
@@ -434,6 +434,7 @@ func TestCommentService_Delete(t *testing.T) {
 		mockComment    *Comment
 		mockFindErr    error
 		mockDeleteErr  error
+		mockDeleted    bool
 		wantErr        error
 		wantFindCall   int
 		wantDeleteCall int
@@ -443,6 +444,7 @@ func TestCommentService_Delete(t *testing.T) {
 			userID:         1,
 			commentID:      100,
 			mockComment:    &Comment{ID: 100, UserID: 1, Content: "my comment"},
+			mockDeleted:    true,
 			wantErr:        nil,
 			wantFindCall:   1,
 			wantDeleteCall: 1,
@@ -487,6 +489,7 @@ func TestCommentService_Delete(t *testing.T) {
 			commentID:      100,
 			mockComment:    &Comment{ID: 100, UserID: 1, Content: "my comment"},
 			mockDeleteErr:  errDBError,
+			mockDeleted:    false,
 			wantErr:        errDBError,
 			wantFindCall:   1,
 			wantDeleteCall: 1,
@@ -499,12 +502,12 @@ func TestCommentService_Delete(t *testing.T) {
 				FindByIDFunc: func(ctx context.Context, id uint64) (*Comment, error) {
 					return tt.mockComment, tt.mockFindErr
 				},
-				DeleteFunc: func(ctx context.Context, commentID, userID uint64) error {
-					return tt.mockDeleteErr
+				DeleteFunc: func(ctx context.Context, commentID, userID uint64) (bool, error) {
+					return tt.mockDeleted, tt.mockDeleteErr
 				},
 			}
 
-			svc := NewCommentService(commentRepo, nil, nil)
+			svc := NewCommentService(commentRepo, nil, nil, nil)
 			err := svc.Delete(context.Background(), tt.userID, tt.commentID)
 
 			if tt.wantErr != nil {

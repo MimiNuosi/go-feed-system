@@ -269,6 +269,110 @@ func TestRedisRepository_RecordViewRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestRedisRepository_AddScoreIntegration(t *testing.T) {
+	client := openHotTestRedis(t)
+	repository := NewRedisRepository(client)
+	ctx := context.Background()
+	at := time.Date(2026, 10, 10, 10, 7, 30, 0, time.UTC)
+
+	bucket1h, err := WindowOneHour.CurrentBucketKey(at)
+	if err != nil {
+		t.Fatalf("build 1h bucket: %v", err)
+	}
+	bucket24h, err := WindowTwentyFourH.CurrentBucketKey(at)
+	if err != nil {
+		t.Fatalf("build 24h bucket: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = client.Del(context.Background(), bucket1h, bucket24h).Err()
+	})
+
+	tests := []struct {
+		name       string
+		videoID    uint64
+		delta      int64
+		at         time.Time
+		wantErr    error
+		wantScore1 float64
+		wantScore2 float64
+	}{
+		{
+			name:       "正分同时更新两个窗口",
+			videoID:    100,
+			delta:      5,
+			at:         at,
+			wantScore1: 5,
+			wantScore2: 5,
+		},
+		{
+			name:       "负分同时更新两个窗口",
+			videoID:    100,
+			delta:      -3,
+			at:         at,
+			wantScore1: 2,
+			wantScore2: 2,
+		},
+		{
+			name:    "delta 为零不访问 Redis",
+			videoID: 200,
+			delta:   0,
+			at:      at,
+		},
+		{
+			name:    "videoID 为零",
+			delta:   5,
+			at:      at,
+			wantErr: ErrInvalidInput,
+		},
+		{
+			name:    "时间为零",
+			videoID: 100,
+			delta:   5,
+			wantErr: ErrInvalidInput,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := repository.AddScore(ctx, tt.videoID, tt.delta, tt.at)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("expected error %v, got %v", tt.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("add score: %v", err)
+			}
+
+			if tt.delta == 0 {
+				_, err := client.ZScore(ctx, bucket1h, formatVideoID(tt.videoID)).Result()
+				if !errors.Is(err, redis.Nil) {
+					t.Fatalf("expected no score change for zero delta, got %v", err)
+				}
+				return
+			}
+
+			score1h, err := client.ZScore(ctx, bucket1h, formatVideoID(tt.videoID)).Result()
+			if err != nil {
+				t.Fatalf("get 1h score: %v", err)
+			}
+			if score1h != tt.wantScore1 {
+				t.Fatalf("expected 1h score %v, got %v", tt.wantScore1, score1h)
+			}
+
+			score24h, err := client.ZScore(ctx, bucket24h, formatVideoID(tt.videoID)).Result()
+			if err != nil {
+				t.Fatalf("get 24h score: %v", err)
+			}
+			if score24h != tt.wantScore2 {
+				t.Fatalf("expected 24h score %v, got %v", tt.wantScore2, score24h)
+			}
+		})
+	}
+}
+
 func openHotTestRedis(t *testing.T) *redis.Client {
 	t.Helper()
 
