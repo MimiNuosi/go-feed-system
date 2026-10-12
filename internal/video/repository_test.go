@@ -3,6 +3,7 @@ package video
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -165,6 +166,60 @@ func TestGORMRepository_CreateWithOutbox(t *testing.T) {
 			t.Fatalf("expected video insert to roll back, found %d row", count)
 		}
 	})
+}
+
+// TestGORMRepository_ViewCountRoundTrip 验证浏览量能从 MySQL 写进去、读出来。
+//
+// 它同时确认两件事：
+//  1. AddViewCount 是累加语义（view_count + delta），不是覆盖。
+//  2. ViewCount 字段加进模型之后，FindByID 的 SELECT * 会自动把它读回来，
+//     仓储层不需要额外改动。
+func TestGORMRepository_ViewCountRoundTrip(t *testing.T) {
+	tx := openTestDB(t)
+	author := createTestAuthor(t, tx)
+	repository := NewGORMRepository(tx, outbox.NewGORMRepository(tx))
+	ctx := context.Background()
+
+	item := newOutboxTestVideo(author.ID)
+	if err := repository.Create(ctx, item); err != nil {
+		t.Fatalf("create video: %v", err)
+	}
+	if item.ViewCount != 0 {
+		t.Fatalf("expected new video view count 0, got %d", item.ViewCount)
+	}
+
+	if err := repository.AddViewCount(ctx, item.ID, 7); err != nil {
+		t.Fatalf("add view count: %v", err)
+	}
+	reloaded, err := repository.FindByID(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("find video by id: %v", err)
+	}
+	if reloaded.ViewCount != 7 {
+		t.Fatalf("expected view count 7, got %d", reloaded.ViewCount)
+	}
+
+	// 再来一次必须是累加，不能把上一次的值覆盖掉
+	if err := repository.AddViewCount(ctx, item.ID, 3); err != nil {
+		t.Fatalf("add view count again: %v", err)
+	}
+	reloaded, err = repository.FindByID(ctx, item.ID)
+	if err != nil {
+		t.Fatalf("find video by id: %v", err)
+	}
+	if reloaded.ViewCount != 10 {
+		t.Fatalf("expected accumulated view count 10, got %d", reloaded.ViewCount)
+	}
+
+	// 视频不存在时 RowsAffected == 0，属于正常情况：增量丢弃，不返回错误
+	if err := repository.AddViewCount(ctx, item.ID+999999, 1); err != nil {
+		t.Fatalf("expected missing video to be tolerated, got %v", err)
+	}
+
+	// 非正增量是非法输入
+	if err := repository.AddViewCount(ctx, item.ID, 0); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for zero delta, got %v", err)
+	}
 }
 
 func TestGORMRepository_ListReadyByIDs(t *testing.T) {
