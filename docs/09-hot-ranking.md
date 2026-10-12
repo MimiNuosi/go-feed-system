@@ -329,10 +329,10 @@ TEST_REDIS_ADDR=<addr> TEST_REDIS_DB=15 TEST_REDIS_PASSWORD=<pass> \
   go test -run PendingViewsIntegration ./internal/hot/
 ```
 
-待办：`videos.view_count` 目前只写不读，详情接口还没有暴露播放量。
-另外 `RedisRepository` 的 logger 现在用的是 `slog.Default()`，
-和 main 里注入的应用 logger 不是同一个（输出会走默认 handler），
-按项目的显式依赖注入约定应该改成构造参数传入。
+待办：`videos.view_count` 目前只写不读，视频详情接口还没有暴露播放量。
+
+`RedisRepository` 的 logger 已改成构造参数注入（`NewRedisRepository(client, logger)`），
+不再使用 `slog.Default()`，保证 Worker 的日志和应用日志走同一个 handler。
 
 已确定的做法（方案 A，宁可多算不可少算）：
 

@@ -13,7 +13,7 @@ import (
 
 func TestRedisRepository_RecordViewIntegration(t *testing.T) {
 	client := openHotTestRedis(t)
-	repository := NewRedisRepository(client)
+	repository := NewRedisRepository(client, discardLogger())
 	ctx := context.Background()
 	occurredAt := time.Date(2026, 10, 10, 10, 7, 30, 0, time.UTC)
 	bucket1h, err := WindowOneHour.CurrentBucketKey(occurredAt)
@@ -108,7 +108,7 @@ func TestRedisRepository_RecordViewIntegration(t *testing.T) {
 
 func TestRedisRepository_TopVideoIDsIntegration(t *testing.T) {
 	client := openHotTestRedis(t)
-	repository := NewRedisRepository(client)
+	repository := NewRedisRepository(client, discardLogger())
 	ctx := context.Background()
 	at := time.Date(2026, 10, 10, 10, 7, 30, 0, time.UTC)
 
@@ -228,7 +228,7 @@ func TestRedisRepository_TopVideoIDsIntegration(t *testing.T) {
 
 func TestRedisRepository_RecordViewRejectsInvalidInput(t *testing.T) {
 	client := openHotTestRedis(t)
-	repository := NewRedisRepository(client)
+	repository := NewRedisRepository(client, discardLogger())
 	ctx := context.Background()
 
 	tests := []struct {
@@ -271,7 +271,7 @@ func TestRedisRepository_RecordViewRejectsInvalidInput(t *testing.T) {
 
 func TestRedisRepository_AddScoreIntegration(t *testing.T) {
 	client := openHotTestRedis(t)
-	repository := NewRedisRepository(client)
+	repository := NewRedisRepository(client, discardLogger())
 	ctx := context.Background()
 	at := time.Date(2026, 10, 10, 10, 7, 30, 0, time.UTC)
 
@@ -380,7 +380,7 @@ func TestRedisRepository_AddScoreIntegration(t *testing.T) {
 // 需要本机 Redis 可用，否则会自动跳过。
 func TestRedisRepository_PendingViewsIntegration(t *testing.T) {
 	client := openHotTestRedis(t)
-	repository := NewRedisRepository(client)
+	repository := NewRedisRepository(client, discardLogger())
 	ctx := context.Background()
 
 	t.Cleanup(func() {

@@ -139,7 +139,7 @@ func run() error {
 		}
 	}()
 
-	hotRepository := hot.NewRedisRepository(redisClient)
+	hotRepository := hot.NewRedisRepository(redisClient, logger)
 	hotService := hot.NewService(hotRepository, logger)
 	hotScoreRecorder := hot.NewScoreRecorder(hotRepository, logger)
 

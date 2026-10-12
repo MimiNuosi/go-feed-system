@@ -38,10 +38,13 @@ type RedisRepository struct {
 	viewDedupTTL time.Duration
 }
 
-func NewRedisRepository(client *redis.Client) *RedisRepository {
+func NewRedisRepository(client *redis.Client, logger *slog.Logger) *RedisRepository {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &RedisRepository{
 		client:       client,
-		logger:       slog.Default(),
+		logger:       logger,
 		viewDedupTTL: defaultViewDedupTTL,
 	}
 }
