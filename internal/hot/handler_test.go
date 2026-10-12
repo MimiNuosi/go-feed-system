@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -238,6 +239,7 @@ func TestHandler_ListHot(t *testing.T) {
 		wantWindow    Window
 		wantPageSize  int
 		wantBody      string
+		wantViewCount int64
 	}{
 		{
 			name:          "默认分页返回热榜",
@@ -248,6 +250,7 @@ func TestHandler_ListHot(t *testing.T) {
 			wantWindow:    WindowOneHour,
 			wantPageSize:  DefaultHotPageSize,
 			wantBody:      `"id":3`,
+			wantViewCount: 42,
 		},
 		{
 			name:         "page_size 裁剪到上限",
@@ -308,6 +311,7 @@ func TestHandler_ListHot(t *testing.T) {
 						Description: "desc",
 						ContentType: "video/mp4",
 						CreatedAt:   time.Now(),
+						ViewCount:   42,
 						Status:      video.StatusReady,
 					},
 				},
@@ -373,6 +377,18 @@ func TestHandler_ListHot(t *testing.T) {
 					tt.wantBody,
 					response.Body.String(),
 				)
+			}
+
+			// 热榜 Item 的播放量来自批量查回的 videos，必须透传出来
+			if tt.wantViewCount > 0 {
+				expected := fmt.Sprintf(`"view_count":%d`, tt.wantViewCount)
+				if !strings.Contains(response.Body.String(), expected) {
+					t.Fatalf(
+						"expected body to contain %q, got %s",
+						expected,
+						response.Body.String(),
+					)
+				}
 			}
 		})
 	}

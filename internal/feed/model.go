@@ -24,6 +24,7 @@ type VideoRecord struct {
 	Description string    `gorm:"column:description"`
 	ContentType string    `gorm:"column:content_type"`
 	CreatedAt   time.Time `gorm:"column:created_at"`
+	ViewCount   int64     `gorm:"column:view_count"`
 }
 
 type AuthorInfo = feedmodel.AuthorInfo

@@ -200,6 +200,7 @@ func TestService_ListFollowing(t *testing.T) {
 		wantItemsLen        int
 		wantHasMore         bool
 		wantNextCursorEmpty bool
+		wantFirstViewCount  int64
 		wantUserCall        int
 		wantCountCall       int
 		wantLikedCall       int
@@ -222,7 +223,7 @@ func TestService_ListFollowing(t *testing.T) {
 			userID:   1,
 			pageSize: 5,
 			mockVideos: []VideoRecord{
-				{ID: 100, AuthorID: 10, Title: "v1", CreatedAt: now},
+				{ID: 100, AuthorID: 10, Title: "v1", CreatedAt: now, ViewCount: 120},
 				{ID: 101, AuthorID: 11, Title: "v2", CreatedAt: now.Add(-time.Hour)},
 			},
 			mockUsers:           validUserMap,
@@ -232,6 +233,7 @@ func TestService_ListFollowing(t *testing.T) {
 			wantItemsLen:        2,
 			wantHasMore:         false,
 			wantNextCursorEmpty: true,
+			wantFirstViewCount:  120,
 			wantUserCall:        1,
 			wantCountCall:       1,
 			wantLikedCall:       1,
@@ -374,6 +376,20 @@ func TestService_ListFollowing(t *testing.T) {
 				}
 				if (page.NextCursor == "") != tt.wantNextCursorEmpty {
 					t.Errorf("expected NextCursor empty %v, got cursor=%q", tt.wantNextCursorEmpty, page.NextCursor)
+				}
+
+				// 浏览量必须从 VideoRecord 透传到 Feed Item
+				if tt.wantFirstViewCount > 0 {
+					if len(page.Items) == 0 {
+						t.Fatal("expected items, got none")
+					}
+					if page.Items[0].ViewCount != tt.wantFirstViewCount {
+						t.Errorf(
+							"expected first item view count %d, got %d",
+							tt.wantFirstViewCount,
+							page.Items[0].ViewCount,
+						)
+					}
 				}
 
 				// 额外验证：如果作者缺失，是否填充了 "已注销用户"

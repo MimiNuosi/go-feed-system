@@ -404,7 +404,12 @@ func TestService_GetDetail(t *testing.T) {
 	// 1. 初始化 Fake 依赖
 	fakeRepo := &fakeVideoRepository{
 		FindByIDFunc: func(ctx context.Context, id uint64) (*Video, error) {
-			return &Video{ID: 1, AuthorID: 1, Title: "test video"}, nil
+			return &Video{
+				ID:        1,
+				AuthorID:  1,
+				Title:     "test video",
+				ViewCount: 42,
+			}, nil
 		},
 	}
 	fakeStorage := &fakeObjectStorage{}
@@ -428,6 +433,10 @@ func TestService_GetDetail(t *testing.T) {
 		}
 		if detail.Author.Username != "user001" {
 			t.Errorf("expected username 'user001', got '%s'", detail.Author.Username)
+		}
+		// 浏览量必须从 Video 透传到 VideoDetail
+		if detail.ViewCount != 42 {
+			t.Errorf("expected view count 42, got %d", detail.ViewCount)
 		}
 	})
 

@@ -251,6 +251,7 @@ func (s *Service) GetDetail(ctx context.Context, id uint64) (*VideoDetail, error
 		Description: item.Description,
 		ContentType: item.ContentType,
 		SizeBytes:   item.SizeBytes,
+		ViewCount:   item.ViewCount,
 		Status:      item.Status,
 		Author: AuthorInfo{
 			ID:       author.ID,

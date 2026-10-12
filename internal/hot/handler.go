@@ -293,6 +293,7 @@ func (h *Handler) buildHotPage(
 			Description: videoItem.Description,
 			ContentType: videoItem.ContentType,
 			CreatedAt:   videoItem.CreatedAt,
+			ViewCount:   videoItem.ViewCount,
 			LikeCount:   likeCountMap[videoItem.ID],
 			IsLikedBy:   likedMap[videoItem.ID],
 		})

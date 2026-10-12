@@ -329,7 +329,21 @@ TEST_REDIS_ADDR=<addr> TEST_REDIS_DB=15 TEST_REDIS_PASSWORD=<pass> \
   go test -run PendingViewsIntegration ./internal/hot/
 ```
 
-待办：`videos.view_count` 目前只写不读，视频详情接口还没有暴露播放量。
+播放量的读取路径已经打通：`VideoDetail` 和 Feed 的 `Item` 都带上了
+`view_count`，值来自 MySQL 快照（`SELECT *` 自动带出，仓储层无需额外查询）。
+
+实测到的滞后现象（这就是"最终一致"的真实样子）：
+
+```text
+发一次浏览 -> 热榜 Item 立刻能查到，view_count 还是 1
+-> 7 秒后 MySQL 变成 2，详情接口变成 2
+```
+
+待办：详情接口的实时补偿。现在是只读 MySQL，最多滞后一个回写周期
+（默认 5 秒）。要做到"自己刚看完就显示最新数字"，需要在读路径上合并
+Redis 里还没回写的增量（`HGET video:views:pending <videoID>`），
+显示 `mysql + pending`。代价是每个详情请求多一次 Redis 读，
+并且要定义 Redis 不可用时的降级行为（例如降级为只读 MySQL）。
 
 `RedisRepository` 的 logger 已改成构造参数注入（`NewRedisRepository(client, logger)`），
 不再使用 `slog.Default()`，保证 Worker 的日志和应用日志走同一个 handler。

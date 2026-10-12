@@ -178,6 +178,7 @@ func (s *Service) ListFollowing(
 			Description: r.Description,
 			ContentType: r.ContentType,
 			CreatedAt:   r.CreatedAt,
+			ViewCount:   r.ViewCount,
 			LikeCount:   likeCount,
 			IsLikedBy:   isLiked,
 		})

@@ -45,7 +45,7 @@ func (r *GORMRepository) ListFollowing(
 	// 1. 初始化查询：选择视频表，并 JOIN 关注表
 	query := r.db.WithContext(ctx).
 		Table("videos AS v").
-		Select("v.id, v.author_id, v.title, v.description, v.content_type, v.created_at").
+		Select("v.id, v.author_id, v.title, v.description, v.content_type, v.view_count, v.created_at").
 		Joins("JOIN follows AS f ON f.followee_id = v.author_id").
 		Where("f.follower_id = ?", followerID)
 
@@ -79,7 +79,7 @@ func (r *GORMRepository) ListVisibleByIDs(
 	var records []VideoRecord
 	err := r.db.WithContext(ctx).
 		Table("videos AS v").
-		Select("v.id, v.author_id, v.title, v.description, v.content_type, v.created_at").
+		Select("v.id, v.author_id, v.title, v.description, v.content_type, v.view_count, v.created_at").
 		Joins("JOIN follows AS f ON f.followee_id = v.author_id").
 		Where("f.follower_id = ?", followerID).
 		Where("v.id IN ?", videoIDs).
@@ -126,7 +126,7 @@ func (r *GORMRepository) ListFollowingByAuthorIDs(
 
 	query := r.db.WithContext(ctx).
 		Table("videos AS v").
-		Select("v.id, v.author_id, v.title, v.description, v.content_type, v.created_at").
+		Select("v.id, v.author_id, v.title, v.description, v.content_type, v.view_count, v.created_at").
 		Where("v.author_id IN ?", authorIDs)
 
 	if cursor != nil {

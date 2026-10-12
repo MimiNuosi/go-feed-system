@@ -187,6 +187,7 @@ func TestHandler_GetDetail(t *testing.T) {
 		wantStatusCode int
 		wantLikeCount  int64
 		wantIsLikedBy  bool
+		wantViewCount  int64
 		wantLikeCalls  int    // 预期调用 LikeStateReader 的次数
 		wantViewerID   uint64 // 预期传递给 LikeStateReader 的 viewerID
 	}{
@@ -195,7 +196,12 @@ func TestHandler_GetDetail(t *testing.T) {
 			videoID: "1",
 			hasAuth: false, // 匿名
 			mockVideoFunc: func(ctx context.Context, id uint64) (*VideoDetail, error) {
-				return &VideoDetail{ID: 1, Title: "test video", Author: AuthorInfo{ID: 1, Username: "user001"}}, nil
+				return &VideoDetail{
+					ID:        1,
+					Title:     "test video",
+					ViewCount: 42,
+					Author:    AuthorInfo{ID: 1, Username: "user001"},
+				}, nil
 			},
 			mockLikeFunc: func(ctx context.Context, viewerID, videoID uint64) (int64, bool, error) {
 				return 100, false, nil // 匿名用户即使视频有点赞，isLikedBy 也为 false
@@ -203,6 +209,7 @@ func TestHandler_GetDetail(t *testing.T) {
 			wantStatusCode: http.StatusOK,
 			wantLikeCount:  100,
 			wantIsLikedBy:  false,
+			wantViewCount:  42,
 			wantLikeCalls:  1, // 核心：即使是匿名，也要查点赞总数
 			wantViewerID:   0, // 核心：匿名传 0
 		},
@@ -314,6 +321,19 @@ func TestHandler_GetDetail(t *testing.T) {
 				gotIsLikedBy := resp["is_liked_by"].(bool)
 				if gotIsLikedBy != tt.wantIsLikedBy {
 					t.Errorf("expected is_liked_by %v, got %v", tt.wantIsLikedBy, gotIsLikedBy)
+				}
+
+				// 验证 view_count 字段（详情里的浏览量来自 MySQL 快照）
+				gotViewCount, ok := resp["view_count"].(float64)
+				if !ok {
+					t.Fatalf("view_count missing in body: %s", w.Body.String())
+				}
+				if int64(gotViewCount) != tt.wantViewCount {
+					t.Errorf(
+						"expected view_count %d, got %d",
+						tt.wantViewCount,
+						int64(gotViewCount),
+					)
 				}
 			}
 		})
