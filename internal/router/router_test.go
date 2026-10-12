@@ -78,6 +78,9 @@ type fakeHotRouteService struct {
 	viewerKey     string
 	listHotCalls  int
 	listHotVideos []hot.RankedVideo
+	readyVideos   []video.Video
+	userMap       map[uint64]*user.User
+	likeCounts    map[uint64]int64
 }
 
 func (f *fakeHotRouteService) RecordView(
@@ -107,21 +110,21 @@ func (f *fakeHotRouteService) ListReadyByIDs(
 	ctx context.Context,
 	ids []uint64,
 ) ([]video.Video, error) {
-	return nil, nil
+	return f.readyVideos, nil
 }
 
 func (f *fakeHotRouteService) GetByIDs(
 	ctx context.Context,
 	ids []uint64,
 ) (map[uint64]*user.User, error) {
-	return nil, nil
+	return f.userMap, nil
 }
 
 func (f *fakeHotRouteService) CountByVideoIDs(
 	ctx context.Context,
 	videoIDs []uint64,
 ) (map[uint64]int64, error) {
-	return nil, nil
+	return f.likeCounts, nil
 }
 
 func (f *fakeHotRouteService) LikedVideoIDsByUser(
@@ -346,6 +349,21 @@ func TestHotFeedRoute(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	hotService := &fakeHotRouteService{
 		listHotVideos: []hot.RankedVideo{{VideoID: 3, Score: 5}},
+		readyVideos: []video.Video{
+			{
+				ID:          3,
+				AuthorID:    10,
+				Title:       "hot video",
+				Description: "desc",
+				ContentType: "video/mp4",
+				CreatedAt:   time.Now(),
+				Status:      video.StatusReady,
+			},
+		},
+		userMap: map[uint64]*user.User{
+			10: {ID: 10, Username: "author"},
+		},
+		likeCounts: map[uint64]int64{3: 7},
 	}
 
 	engine := New(Dependencies{
@@ -377,7 +395,7 @@ func TestHotFeedRoute(t *testing.T) {
 	if hotService.listHotCalls != 1 {
 		t.Fatalf("expected one ListHot call, got %d", hotService.listHotCalls)
 	}
-	if !strings.Contains(recorder.Body.String(), `"VideoID":3`) {
+	if !strings.Contains(recorder.Body.String(), `"id":3`) {
 		t.Fatalf("expected ranked video in body, got %s", recorder.Body.String())
 	}
 }
@@ -645,4 +663,40 @@ func TestRouter_FeedFollowing(t *testing.T) {
 			t.Errorf("expected pageSize 10, got %d", fakeFeedSvc.LastPageSize)
 		}
 	})
+}
+
+// TestNew_IgnoresForwardedFor 验证路由层关闭了 XFF 采信。
+//
+// 客户端 IP 被用于匿名浏览去重，如果采信客户端自带的 X-Forwarded-For，
+// 攻击者换个头部值就能伪造出无数个"新观众"，把任意视频刷上热榜。
+func TestNew_IgnoresForwardedFor(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	noop := func(c *gin.Context) { c.Next() }
+
+	engine := New(Dependencies{
+		Logger:                 logger,
+		HealthHandler:          health.NewHandler("test", logger),
+		AuthMiddleware:         noop,
+		OptionalAuthMiddleware: noop,
+	})
+
+	// 借一条探针路由把 c.ClientIP() 暴露出来，方便断言。
+	engine.GET("/__probe/client-ip", func(c *gin.Context) {
+		c.String(http.StatusOK, c.ClientIP())
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__probe/client-ip", nil)
+	req.RemoteAddr = "203.0.113.7:12345"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if got := w.Body.String(); got != "203.0.113.7" {
+		t.Fatalf("X-Forwarded-For 必须被忽略: expected 203.0.113.7, got %q", got)
+	}
 }
