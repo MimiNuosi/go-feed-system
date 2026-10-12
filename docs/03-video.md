@@ -7,6 +7,46 @@
 - 第一版不引入 FFmpeg、缩略图、转码和时长解析。
 - MySQL 只保存视频元数据，视频二进制保存到文件系统。
 - 上传接口需要 JWT 鉴权。
+- 上传类型校验以**服务端内容嗅探**为准，不信任客户端声明的 Content-Type。
+
+## 上传类型校验（已实现）
+
+三层，权威性从低到高：
+
+```text
+第 1 层 扩展名白名单  mp4 / m4v / mov / webm / 3gp
+                    便宜，用于快速拒掉明显不对的文件
+第 2 层 客户端声明    只放行 video/* 和 application/octet-stream
+                    很多 HTTP 客户端（Go multipart 默认、PowerShell -Form）
+                    都会发 octet-stream，拒绝它们只会误伤老实客户端
+第 3 层 内容嗅探      唯一裁决者，决定入库的 MIME 和 StorageKey 的后缀
+```
+
+嗅探只读文件头前 512 字节，并且必须“只看不消费”：
+
+```go
+reader := bufio.NewReader(input.Content)
+header, err := reader.Peek(512) // Peek 不会推进游标
+```
+
+ISO-BMFF（mp4/mov/m4v/3gp）的 `ftyp` box 大端布局：
+
+```text
+offset 0   4 字节  box 总长度
+offset 4   4 字节  固定为 "ftyp"
+offset 8   4 字节  major_brand
+offset 12  4 字节  minor_version（不是 brand，要跳过）
+offset 16  起      每 4 字节一个 compatible brand
+```
+
+`.m4v`/`.m4a` 与 `.mp4` 是同一个容器，统一归并为 `video/mp4`。
+WebM 用 EBML 魔数 `1A 45 DF A3` 识别。
+
+刻意不使用 `http.DetectContentType`：它的契约是“浏览器该怎么渲染这段字节”，
+只在一串 brand 里搜到字面量 `mp4` 才返回 `video/mp4`，因此会把
+`ffmpeg -brand avc1` 生成的真 mp4、QuickTime、3gp 全判成未知类型。
+
+扩展名和嗅探结果不一致时按内容放行，但打 `WARN` 日志留痕。
 
 ## 目录结构
 
@@ -98,3 +138,21 @@ Service 负责协调两者，避免文件系统和 MySQL 逻辑散落在 Handler
 4. 为什么 Content-Type 不能只依赖客户端传入的 Header？
 
 客户端的 Header 是可以被任意伪造的（比如把 .exe 重命名为 .mp4 并伪造 Header）。如果在后端只信这个 Header，黑客就能上传恶意可执行文件。真正严谨的做法是：读取文件的前几个字节（魔数/Magic Number） 来判断真实的文件类型，或者调用 ffprobe 这样的工具去验证它是不是合法的视频编码格式。
+
+本项目已经落地第一半：`SniffContainer` 解析 `ftyp` box 的 brand（或 EBML 魔数）
+决定容器类型，入库的 MIME 和 StorageKey 后缀都用嗅探结果。因为暂时不引入
+FFmpeg，校验只到“容器”这一层，还没有到“编码/时长/分辨率”这一层。
+
+5. 为什么不能直接用 `http.DetectContentType`？
+
+它的契约是“浏览器该怎么渲染这段字节”，不是“这是不是我能收下的视频容器”。
+它的 mp4 签名只在一串 brand 里搜到字面量 `mp4` 才返回 `video/mp4`，所以
+`ffmpeg -brand avc1` 生成的真 mp4、iTunes 的 `M4V `、QuickTime 和 3gp 全部
+落到 `application/octet-stream`。用它做校验会一边放过改名伪装、一边误杀合法文件。
+
+6. `bufio.Reader.Peek` 和 C++ 的 `seekg(0)` 是什么关系？
+
+嗅探需要“先看头部再原样写入存储”。`io.Reader` 没有回退能力，所以不能用
+seek 的思路；`Peek` 返回缓冲区里的字节但不推进游标，正好等价于“看一眼再
+放回去”。如果改用 `Read` 读掉 512 字节，就必须自己拼一个 `io.MultiReader`
+补回头部，很容易漏字节。
