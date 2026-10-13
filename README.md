@@ -1,7 +1,88 @@
 # Go Feed System
 
-一个用于学习 Go 后端工程的短视频 Feed 流项目，覆盖账号、视频、关注、点赞、评论、
-Feed 推拉结合、Outbox、RabbitMQ、DLQ、可观测性和 Docker Compose。
+基于 Go 的短视频 Feed 流后端，从零实现账号、视频上传、点赞/评论/关注、
+Feed 流与热榜，并把异步解耦、缓存一致性、限流与可观测性做到可交付的程度。
+
+三个最值得看的点：
+
+```text
+1. Feed 推拉结合 + 复合游标分页：大 V 走写扩散收件箱，普通作者读时回源；
+   游标带 (created_at, id) 与 (score, videoID)，同分/同毫秒边界不重不漏
+2. 滑动窗口热榜：1h/24h 双 bucket 用单次 Lua 原子更新，配合 singleflight
+   与本地 fresh/stale 缓存抗击穿；压测下性能与零成本探针接口持平
+   （4000 rps，P95 610µs）
+3. 性能问题有据可查：用语句级测量发现详情接口每请求实际发出 12 条 SQL，
+   优化到 3 条，同速率 P95 由 17.9ms 降至 2.4ms，容量拐点 2500 → 5000 rps
+```
+
+## 架构与请求链路
+
+```text
+HTTP 层    Gin：RequestID → AccessLog → Metrics → Recovery → RateLimit → 路由
+业务层     Handler（参数校验、DTO）→ Service（业务规则、聚合）
+数据层     Repository（GORM / Redis / 对象存储），接口定义在使用方
+异步层     Outbox 表 → Publisher → RabbitMQ → Consumer（含重试与死信）
+后台任务   浏览量回写 Worker、Feed Inbox 重建 CLI、DLQ 查询与重放 CLI
+```
+
+一次典型的写请求（发布视频）：
+
+```text
+POST /api/v1/videos
+-> 校验内容嗅探（不信任客户端声明的类型）
+-> 落盘对象存储 + 同事务写 videos 与 outbox_events
+-> 返回 201；后台 Publisher 异步投递事件，Consumer 写扩散到粉丝收件箱
+```
+
+## 技术选型与理由
+
+| 组件 | 用它解决什么 | 取舍 |
+| --- | --- | --- |
+| Gin | HTTP 路由与中间件链 | 比原生 net/http 少样板，中间件顺序显式可控 |
+| GORM | CRUD 与事务 | 团队效率优先；热点查询用 `SELECT` 明确列 + 索引兜底 |
+| MySQL | 元数据与关系数据 | 强一致、事务边界清晰；不做缓存替代品 |
+| Redis | 缓存、排行榜、去重、增量 | ZSET 天然适配滑动窗口；Lua 保证多 key 原子 |
+| RabbitMQ | 事件驱动解耦 | 相比进程内队列可持久化、可重试、可进死信 |
+| Outbox 表 | 业务写入与消息投递的一致性 | 换取最终一致，代价是至少一次投递 + 幂等消费 |
+| 进程内令牌桶 | 限流 | 单实例下额度精确、零网络开销；多实例需换 Redis |
+| Prometheus/Grafana | 指标与面板 | 指标名和标签基数受控，避免高基数标签 |
+
+## 关键设计
+
+- **推拉结合**：按粉丝数阈值决定写扩散还是读时回源，避免小作者也给每个粉丝写一份。见 [docs/06](docs/06-feed-scaling.md)
+- **复合游标分页**：不用 offset（并发插入会跳页），游标同时带排序键与主键，处理同分/同毫秒边界。见 [docs/09](docs/09-hot-ranking.md)、`internal/hot/cursor.go`
+- **滑动窗口热榜**：1h 用 1 分钟桶、24h 用 5 分钟桶，查询时合并；member 用定长补零 ID 让同分稳定排序
+- **防击穿**：singleflight 合并并发未命中 + 本地 fresh(5s)/stale(30s) 两级缓存，Redis 故障时降级返回 stale 数据
+- **至少一次 + 幂等**：去重键 + 唯一索引兜住重复消费；浏览量回写采用"先写库、后删增量"，失败条目留在 Hash 中自动重试
+- **限流粒度**：全局桶保护整体吞吐 + 按身份桶，探针与 /metrics 豁免，避免"额度打满导致健康检查失败、容器反复重启"
+- **分级探针**：`/livez` 只看进程存活，`/readyz` 区分关键依赖（MySQL）与可降级依赖（Redis、RabbitMQ）
+
+## 性能
+
+单机 Docker（限 6 核 / 6GB）压测，客户端与服务同机，开环固定速率：
+
+```text
+接口                          4000 rps 下的延迟
+GET /livez（探针）             mean 540µs   P95 610µs     <- 天花板参考
+GET /api/v1/feed/hot           mean 566µs   P95 1.03ms    <- 缓存命中，与探针持平
+GET /api/v1/videos/1（优化前）  mean 6.27ms  P95 17.9ms
+GET /api/v1/videos/1（优化后）  mean 1.4ms   P95 2.4ms
+```
+
+详情接口每请求 SQL 语句数：**12.04 → 4.03 → 3.02**（分别对应参数内联、去掉冗余校验）。
+完整的测量方法、速率阶梯与瓶颈定位见 [docs/10](docs/10-load-testing.md)，
+脚本在 [`deploy/loadtest/`](deploy/loadtest/README.md)。
+
+## 已知局限与后续规划
+
+```text
+1. 匿名浏览去重按"对端地址"退化成了全站单一身份，需要客户端设备 ID + 限流兜底
+2. 详情接口的浏览量只读 MySQL 快照，最多滞后一个回写周期（默认 5 秒）
+3. 限流是进程内的，水平扩展后集群总额度会变成实例数的倍数
+4. 热榜第 1 段读取会把同一分数的成员整段读回，长尾数据下应改为 ZRANK + 限量 ZRANGE
+5. 视频只做容器级校验（ftyp/EBML），没有转码与编码级校验
+6. 未做真正的多实例部署验证（负载均衡、会话一致性）
+```
 
 ## 技术栈
 
@@ -19,20 +100,17 @@ Docker Compose
 
 ## 当前阶段
 
-阶段 8：交付、Docker Compose 与 CI。
+阶段 10：压测与性能调优（已完成）。
 
 已完成：
 
 ```text
-API 多阶段 Dockerfile
-Docker Compose 完整环境
-MySQL 持久化与迁移初始化
-Redis 密码与持久化
-RabbitMQ 管理与健康检查
-Prometheus 抓取和告警规则
-Grafana provisioning 与 Dashboard
-DLQ 查询和重放工具
-Feed Inbox 重建工具
+阶段 0-4   服务骨架、HTTP 分层、鉴权、视频上传、互动
+阶段 5-6   Feed 主链路、写扩散与推拉结合
+阶段 7     健康检查、消费端重连、DLQ、Prometheus 指标
+阶段 8     Docker Compose 完整环境、多阶段构建、GitHub Actions
+阶段 9     滑动窗口热榜、防击穿、浏览量回写、两层限流、游标分页
+阶段 10    vegeta 速率阶梯压测、语句级瓶颈定位与两步优化
 ```
 
 ## 项目结构
@@ -47,7 +125,8 @@ pkg/                 配置、日志、数据库、Redis、RabbitMQ、指标等�
 migrations/          只读 SQL 迁移
 deploy/prometheus    Prometheus 配置与告警
 deploy/grafana       Grafana 数据源和 Dashboard
-docs/                分阶段学习记录
+deploy/loadtest      vegeta 压测脚本与目标文件
+docs/                分阶段设计记录、压测报告、简历草稿
 ```
 
 ## Docker Compose 启动
@@ -204,3 +283,5 @@ go build ./cmd/...
 - [阶段 7：健康检查、重连、DLQ 与指标](docs/07-operations-observability.md)
 - [阶段 8：交付、Docker Compose 与 CI](docs/08-delivery-and-ci.md)
 - [阶段 9：热门 Feed、滑动窗口热榜与防击穿](docs/09-hot-ranking.md)
+- [阶段 10：压测与性能调优](docs/10-load-testing.md)
+- [简历草稿与面试追问对照表](docs/resume-draft.md)
