@@ -38,7 +38,7 @@ type ListHotService interface {
 		at time.Time,
 		cursor *Cursor,
 		pageSize int,
-	) ([]RankedVideo, error)
+	) (*Page, error)
 }
 
 type VideoReader interface {
@@ -189,21 +189,23 @@ func (h *Handler) ListHot(c *gin.Context) {
 	} else if pageSize > MaxHotPageSize {
 		pageSize = MaxHotPageSize
 	}
-	cursor := c.Query("cursor")
-	if cursor != "" {
+	// 游标是客户端可控输入，解析失败一律按 invalid input 处理。
+	cursor, err := DecodeCursor(c.Query("cursor"))
+	if err != nil {
 		httpx.Abort(
 			c,
 			http.StatusBadRequest,
 			httpx.ErrorCodeInvalidArgument,
-			"cursor not supported yet",
+			"invalid cursor",
 		)
 		return
 	}
+
 	ranked, err := h.listHotService.ListHot(
 		c.Request.Context(),
 		window,
 		time.Now(),
-		nil, // cursor
+		cursor,
 		pageSize,
 	)
 	if err != nil {
@@ -222,14 +224,17 @@ func (h *Handler) ListHot(c *gin.Context) {
 
 func (h *Handler) buildHotPage(
 	ctx context.Context,
-	ranked []RankedVideo,
+	page *Page,
 ) (*feedmodel.Page, error) {
-	page := &feedmodel.Page{
-		Items:   []feedmodel.Item{},
-		HasMore: false,
+	ranked := page.Videos
+
+	result := &feedmodel.Page{
+		Items:      []feedmodel.Item{},
+		NextCursor: page.NextCursor,
+		HasMore:    page.HasMore,
 	}
 	if len(ranked) == 0 {
-		return page, nil
+		return result, nil
 	}
 
 	videoIDs := make([]uint64, 0, len(ranked))
@@ -283,7 +288,7 @@ func (h *Handler) buildHotPage(
 			username = author.Username
 		}
 
-		page.Items = append(page.Items, feedmodel.Item{
+		result.Items = append(result.Items, feedmodel.Item{
 			ID: videoItem.ID,
 			Author: feedmodel.AuthorInfo{
 				ID:       videoItem.AuthorID,
@@ -299,5 +304,5 @@ func (h *Handler) buildHotPage(
 		})
 	}
 
-	return page, nil
+	return result, nil
 }

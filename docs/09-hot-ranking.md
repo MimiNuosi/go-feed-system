@@ -159,6 +159,56 @@ score:  该 bucket 内的加权热度
 
 负分不能随意把总热度减成负数，查询和服务端需要明确边界行为。
 
+### 游标分页的骨架（阶段 9.2 补充）
+
+已经交付的部分：
+
+```text
+internal/hot/cursor.go
+  EncodeCursor / DecodeCursor   不透明游标 base64(JSON)，内容只有 (score, video_id)
+internal/hot/service.go
+  ListHot 返回 *Page            Videos + NextCursor + HasMore
+  按 pageSize+1 取数            多出来的一条只用于判断 HasMore
+  buildPage                     裁剪到 pageSize 并生成 next_cursor
+internal/hot/handler.go
+  cursor 参数解析               非法游标返回 400 INVALID_ARGUMENT
+  透传 HasMore / NextCursor     写进 feedmodel.Page
+internal/hot/redis_repository.go
+  rangeFromCursor               第一页已可用；后续页是 TODO
+```
+
+为什么游标必须同时带上 videoID，而不是只带分数：
+
+```text
+热榜整体顺序是 (score DESC, videoID DESC)。
+如果翻页条件只写 "score < cursor.Score"，和游标同分的其余成员会被整段跳过：
+例如 102 和 103 都是 20 分，第一页在 103 处截断，第二页就再也读不到 102。
+```
+
+所以后续页要分两段读：
+
+```text
+第 1 段：score 等于游标分数，且 member 字典序小于游标 member 的那些
+第 2 段：score 严格小于游标分数的所有成员（第 1 段不够 limit 时才补）
+```
+
+验收测试（internal/hot/redis_repository_test.go）专门构造了同分数据：
+
+```text
+种子：101(30)  103(20)  102(20)  104(10)
+第一页 limit=2 -> [101, 103]
+第二页 limit=2 -> [102, 104]      <- 同分接续，最容易漏
+第三页 limit=2 -> []
+另外还逐条翻页一遍，断言整体顺序是 [101, 103, 102, 104] 且不重不漏
+```
+
+跑法（本机 Redis 不可用时会自动跳过）：
+
+```text
+TEST_REDIS_ADDR=<addr> TEST_REDIS_DB=15 TEST_REDIS_PASSWORD=<pass> \
+  go test -run TopVideoIDsPaginationIntegration ./internal/hot/
+```
+
 ## 热门 Feed 查询
 
 ```text
@@ -266,9 +316,8 @@ videos.view_count BIGINT UNSIGNED NOT NULL DEFAULT 0
 - [x] 实现时间 bucket 计算（1h 用 1 分钟桶，24h 用 5 分钟桶）。
 - [x] 实现浏览、点赞、评论热度加权（view +1、like +3、comment +5，取消与删除写负分）。
 - [x] 实现 bucket 合并查询（`ZUNIONSTORE` 到临时 ZSET）。
-- [ ] 处理同分排序和游标分页。
-      同分排序已完成（20 位补零 member，等价于同分时 videoID 大的在前）；
-      游标分页未做，`cursor` 参数目前直接返回 400。
+- [x] 处理同分排序（20 位补零 member，等价于同分时 videoID 大的在前）。
+- [ ] 处理游标分页（留作练习，验收测试已写好，见本轮交付说明）。
 - [x] 过滤不可见视频（`ListReadyByIDs`，查不到的 ID 直接跳过）。
 
 ### 9.3 热门 Feed

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -431,6 +432,97 @@ func TestRedisRepository_PendingViewsIntegration(t *testing.T) {
 	// 重复 ack 必须幂等：第二条已经没了，再删一次也算成功。
 	if err := repository.AckPendingView(ctx, 104); err != nil {
 		t.Fatalf("repeat ack should be idempotent, got %v", err)
+	}
+}
+
+// assertVideoIDs 按顺序比较排名结果里的 videoID。
+func assertVideoIDs(t *testing.T, label string, got []RankedVideo, want []uint64) {
+	t.Helper()
+
+	ids := make([]uint64, 0, len(got))
+	for _, item := range got {
+		ids = append(ids, item.VideoID)
+	}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("%s: expected video IDs %v, got %v", label, want, ids)
+	}
+}
+
+// TestRedisRepository_TopVideoIDsPaginationIntegration 是阶段 9.2 游标分页的验收测试。
+//
+// 它专门造出"同分"的场景，因为同一个分数上的分页是最容易出错的地方：
+// 只按"分数严格小于游标"翻页，会整段漏掉同分的其余成员。
+//
+// 现在是红的（rangeFromCursor 的游标分支还是 TODO），实现完就会变绿。
+func TestRedisRepository_TopVideoIDsPaginationIntegration(t *testing.T) {
+	client := openHotTestRedis(t)
+	repository := NewRedisRepository(client, discardLogger())
+	ctx := context.Background()
+	at := time.Date(2026, 10, 13, 10, 7, 30, 0, time.UTC)
+
+	bucket1h, err := WindowOneHour.CurrentBucketKey(at)
+	if err != nil {
+		t.Fatalf("build bucket key: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = client.Del(context.Background(), bucket1h).Err()
+	})
+
+	// 分数刻意安排成 101(30) > 103(20) == 102(20) > 104(10)。
+	// 同分时 member 按字典序降序，所以 103 排在 102 前面
+	// （member 是 20 位补零的 videoID）。
+	seeds := map[uint64]float64{101: 30, 102: 20, 103: 20, 104: 10}
+	for videoID, score := range seeds {
+		if err := client.ZAdd(ctx, bucket1h, redis.Z{
+			Score:  score,
+			Member: formatVideoID(videoID),
+		}).Err(); err != nil {
+			t.Fatalf("seed score: %v", err)
+		}
+	}
+
+	page1, err := repository.TopVideoIDs(ctx, WindowOneHour, at, nil, 2)
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	assertVideoIDs(t, "第一页", page1, []uint64{101, 103})
+
+	// 第二页必须从同分的 102 接上：只查"分数小于 20"就会漏掉它。
+	cursor := &Cursor{Score: page1[1].Score, VideoID: page1[1].VideoID}
+	page2, err := repository.TopVideoIDs(ctx, WindowOneHour, at, cursor, 2)
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	assertVideoIDs(t, "第二页", page2, []uint64{102, 104})
+
+	next := &Cursor{Score: page2[1].Score, VideoID: page2[1].VideoID}
+	page3, err := repository.TopVideoIDs(ctx, WindowOneHour, at, next, 2)
+	if err != nil {
+		t.Fatalf("third page: %v", err)
+	}
+	if len(page3) != 0 {
+		t.Fatalf("expected an empty third page, got %v", page3)
+	}
+
+	// 逐条翻页：每页一条，拿到的顺序必须和整体顺序完全一致，且不重不漏。
+	var (
+		all    []uint64
+		walker *Cursor
+	)
+	for i := 0; i < 10; i++ {
+		page, err := repository.TopVideoIDs(ctx, WindowOneHour, at, walker, 1)
+		if err != nil {
+			t.Fatalf("walk page %d: %v", i, err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		all = append(all, page[0].VideoID)
+		walker = &Cursor{Score: page[0].Score, VideoID: page[0].VideoID}
+	}
+	if !reflect.DeepEqual(all, []uint64{101, 103, 102, 104}) {
+		t.Fatalf("逐条翻页的顺序不对: %v", all)
 	}
 }
 

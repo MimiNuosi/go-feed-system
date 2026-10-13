@@ -109,7 +109,7 @@ func TestService_ListHot_UsesCacheAndSingleflight(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			videos, err := service.ListHot(
+			page, err := service.ListHot(
 				context.Background(),
 				WindowOneHour,
 				now,
@@ -120,7 +120,7 @@ func TestService_ListHot_UsesCacheAndSingleflight(t *testing.T) {
 				errCh <- err
 				return
 			}
-			if len(videos) != 2 {
+			if len(page.Videos) != 2 {
 				errCh <- errors.New("unexpected hot feed length")
 			}
 		}()
@@ -178,7 +178,7 @@ func TestService_ListHot_UsesStaleCacheOnRepositoryError(t *testing.T) {
 	repository.mu.Unlock()
 	clock.Set(now.Add(10 * time.Second))
 
-	videos, err := service.ListHot(
+	page, err := service.ListHot(
 		context.Background(),
 		WindowOneHour,
 		now,
@@ -188,11 +188,61 @@ func TestService_ListHot_UsesStaleCacheOnRepositoryError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected stale cache fallback, got %v", err)
 	}
-	if len(videos) != 1 || videos[0].VideoID != 1 {
-		t.Fatalf("unexpected stale videos: %v", videos)
+	if len(page.Videos) != 1 || page.Videos[0].VideoID != 1 {
+		t.Fatalf("unexpected stale videos: %v", page.Videos)
 	}
 	if repository.Calls() != 2 {
 		t.Fatalf("expected repository retry, got %d calls", repository.Calls())
+	}
+}
+
+// TestService_ListHot_BuildsNextCursor 验证 pageSize+1 的取数与游标生成。
+func TestService_ListHot_BuildsNextCursor(t *testing.T) {
+	now := time.Date(2026, 10, 10, 10, 0, 0, 0, time.UTC)
+	repository := &fakeRankingRepository{
+		// 仓储按 pageSize+1 取回三条，服务只该返回两条，并带上游标
+		videos: []RankedVideo{
+			{VideoID: 3, Score: 30},
+			{VideoID: 2, Score: 20},
+			{VideoID: 1, Score: 10},
+		},
+	}
+	service := NewService(repository, nil)
+	service.now = func() time.Time { return now }
+
+	page, err := service.ListHot(context.Background(), WindowOneHour, now, nil, 2)
+	if err != nil {
+		t.Fatalf("list hot: %v", err)
+	}
+	if len(page.Videos) != 2 {
+		t.Fatalf("expected 2 videos, got %d", len(page.Videos))
+	}
+	if !page.HasMore {
+		t.Fatal("expected HasMore to be true")
+	}
+
+	cursor, err := DecodeCursor(page.NextCursor)
+	if err != nil {
+		t.Fatalf("decode next cursor: %v", err)
+	}
+	if cursor.VideoID != 2 || cursor.Score != 20 {
+		t.Fatalf("expected cursor at last item (score 20, video 2), got %+v", cursor)
+	}
+
+	// 最后一页：候选数不超过 pageSize 时不应该给出游标
+	repository.mu.Lock()
+	repository.videos = []RankedVideo{{VideoID: 3, Score: 30}}
+	repository.mu.Unlock()
+
+	lastService := NewService(repository, nil)
+	lastService.now = func() time.Time { return now }
+
+	lastPage, err := lastService.ListHot(context.Background(), WindowOneHour, now, nil, 2)
+	if err != nil {
+		t.Fatalf("list hot last page: %v", err)
+	}
+	if lastPage.HasMore || lastPage.NextCursor != "" {
+		t.Fatalf("expected no cursor on the last page, got %+v", lastPage)
 	}
 }
 
@@ -229,12 +279,13 @@ func TestService_ListHot_ValidationAndPageSize(t *testing.T) {
 			wantErr:  ErrInvalidInput,
 		},
 		{
-			name:     "cursor 暂不支持",
-			window:   WindowOneHour,
-			at:       now,
-			cursor:   &Cursor{},
-			pageSize: 20,
-			wantErr:  ErrInvalidInput,
+			name:         "带游标的后续页会透传到仓储",
+			window:       WindowOneHour,
+			at:           now,
+			cursor:       &Cursor{Score: 20, VideoID: 3},
+			pageSize:     20,
+			wantRepoCall: true,
+			wantLimit:    21,
 		},
 		{
 			name:         "pageSize 默认值",
@@ -242,7 +293,7 @@ func TestService_ListHot_ValidationAndPageSize(t *testing.T) {
 			at:           now,
 			pageSize:     0,
 			wantRepoCall: true,
-			wantLimit:    DefaultHotPageSize,
+			wantLimit:    DefaultHotPageSize + 1,
 		},
 		{
 			name:         "pageSize 最大值",
@@ -250,7 +301,7 @@ func TestService_ListHot_ValidationAndPageSize(t *testing.T) {
 			at:           now,
 			pageSize:     1000,
 			wantRepoCall: true,
-			wantLimit:    MaxHotPageSize,
+			wantLimit:    MaxHotPageSize + 1,
 		},
 	}
 

@@ -78,15 +78,12 @@ func (s *Service) ListHot(
 	at time.Time,
 	cursor *Cursor,
 	pageSize int,
-) ([]RankedVideo, error) {
+) (*Page, error) {
 	if _, err := window.Config(); err != nil {
 		return nil, fmt.Errorf("list hot feed: invalid window: %w", ErrInvalidInput)
 	}
 	if at.IsZero() {
 		return nil, fmt.Errorf("list hot feed: at is zero: %w", ErrInvalidInput)
-	}
-	if cursor != nil {
-		return nil, fmt.Errorf("list hot feed: cursor not supported yet: %w", ErrInvalidInput)
 	}
 	if pageSize <= 0 {
 		pageSize = DefaultHotPageSize
@@ -95,6 +92,24 @@ func (s *Service) ListHot(
 		pageSize = MaxHotPageSize
 	}
 
+	videos, err := s.listRankedVideos(ctx, window, at, cursor, pageSize)
+	if err != nil {
+		return nil, err
+	}
+
+	return buildPage(videos, pageSize)
+}
+
+// listRankedVideos 带本地缓存和 singleflight 地取一页排名候选。
+//
+// 它按 pageSize+1 去取：多出来的那一条只用于判断 HasMore，不会返回给调用方。
+func (s *Service) listRankedVideos(
+	ctx context.Context,
+	window Window,
+	at time.Time,
+	cursor *Cursor,
+	pageSize int,
+) ([]RankedVideo, error) {
 	cacheKey := buildHotCacheKey(window, at, cursor, pageSize)
 
 	if fresh, ok := s.cache.GetFresh(cacheKey, s.now()); ok {
@@ -111,7 +126,15 @@ func (s *Service) ListHot(
 			s.queryTimeout,
 		)
 		defer cancel()
-		videos, err := s.repository.TopVideoIDs(queryCtx, window, at, cursor, pageSize)
+
+		// 多取一条：拿到 pageSize+1 条就说明还有下一页。
+		videos, err := s.repository.TopVideoIDs(
+			queryCtx,
+			window,
+			at,
+			cursor,
+			pageSize+1,
+		)
 		if err != nil {
 			if stale, ok := s.cache.GetStale(cacheKey, s.now()); ok {
 				s.logger.Warn("hot feed: using stale cache",
@@ -138,6 +161,30 @@ func (s *Service) ListHot(
 		}
 		return videos, nil
 	}
+}
+
+// buildPage 把候选集裁剪成 pageSize 条，并生成下一页游标。
+func buildPage(videos []RankedVideo, pageSize int) (*Page, error) {
+	page := &Page{Videos: videos}
+	if len(videos) <= pageSize {
+		return page, nil
+	}
+
+	// 多出来的那一条只是"还有下一页"的探针。
+	page.HasMore = true
+	page.Videos = videos[:pageSize]
+
+	last := page.Videos[len(page.Videos)-1]
+	nextCursor, err := EncodeCursor(Cursor{
+		Score:   last.Score,
+		VideoID: last.VideoID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list hot feed: encode cursor: %w", err)
+	}
+	page.NextCursor = nextCursor
+
+	return page, nil
 }
 
 func buildHotCacheKey(

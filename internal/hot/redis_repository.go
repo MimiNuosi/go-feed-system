@@ -2,6 +2,7 @@ package hot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -172,11 +173,6 @@ func (r *RedisRepository) TopVideoIDs(
 	cursor *Cursor,
 	limit int,
 ) ([]RankedVideo, error) {
-	// 第一版只支持首页。后续增加 cursor 时，需要基于 (score, videoID)
-	// 继续读取，并过滤同分位置之前的记录。
-	if cursor != nil {
-		return nil, fmt.Errorf("top video ids: cursor not supported yet: %w", ErrInvalidInput)
-	}
 	if window == "" {
 		return nil, fmt.Errorf("top video ids: window is empty: %w", ErrInvalidInput)
 	}
@@ -185,6 +181,9 @@ func (r *RedisRepository) TopVideoIDs(
 	}
 	if at.IsZero() {
 		return nil, fmt.Errorf("top video ids: at is zero: %w", ErrInvalidInput)
+	}
+	if cursor != nil && cursor.VideoID == 0 {
+		return nil, fmt.Errorf("top video ids: cursor video ID is zero: %w", ErrInvalidInput)
 	}
 
 	bucketKeys, err := window.BucketKeys(at)
@@ -212,9 +211,9 @@ func (r *RedisRepository) TopVideoIDs(
 		return nil, fmt.Errorf("top video ids: set TTL for dest key: %w", err)
 	}
 
-	values, err := r.client.ZRevRangeWithScores(ctx, destKey, 0, int64(limit-1)).Result()
+	values, err := r.rangeFromCursor(ctx, destKey, cursor, limit)
 	if err != nil {
-		return nil, fmt.Errorf("top video ids: ZREVRANGE: %w", err)
+		return nil, fmt.Errorf("top video ids: range page: %w", err)
 	}
 
 	rankedVideos := make([]RankedVideo, 0, len(values))
@@ -234,6 +233,46 @@ func (r *RedisRepository) TopVideoIDs(
 	}
 
 	return rankedVideos, nil
+}
+
+// rangeFromCursor 按 (score DESC, videoID DESC) 取出游标之后的一页。
+//
+// TODO(阶段 9.2)：后续页的取值逻辑由你实现（cursor 为 nil 的第一页已经可用）。
+//
+// 背景：ZSET 的整体顺序是分数降序，分数相同时按 member 字典序降序。
+// member 是 20 位补零的 videoID，所以同分时 videoID 大的排在前面。
+// 因此"游标位置之后"的数据分成两段：
+//
+//	第 1 段：分数等于 cursor.Score，且 member 字典序小于游标 member 的那些
+//	第 2 段：分数严格小于 cursor.Score 的所有成员
+//
+// 只做第 2 段是最常见的错误：同一个分数上的数据会整段漏掉。
+// 例如 102 和 103 都是 20 分，第一页在 103 处截断，
+// 第二页如果只查"分数小于 20"就永远读不到 102。
+//
+// 可用命令：
+//   - ZRangeByScoreWithScores：取某个分数区间，同分内部按 member 升序返回
+//   - ZRevRangeByScoreWithScores：反向取，Max 支持 "(20" 这种排他写法
+//
+// 实现提示：
+//  1. 先取第 1 段：ZRangeByScoreWithScores(key, Min=score, Max=score)。
+//     同分内部是 member 升序，而我们要的是排在游标之后的那些，
+//     所以要从升序结果的尾部往前取。
+//  2. 第 1 段不够 limit 时，再用第 2 段补齐：
+//     ZRevRangeByScoreWithScores(key, Max="("+score, Min="-inf", Count=还差几条)。
+//  3. 两段拼起来，总数不超过 limit。
+//  4. 同一个分数上的成员可能很多，第 1 段不要无脑全量读，
+//     可以先用 Count 限制一个合理上限（比如 limit 或 2*limit）。
+func (r *RedisRepository) rangeFromCursor(
+	ctx context.Context,
+	key string,
+	cursor *Cursor,
+	limit int,
+) ([]redis.Z, error) {
+	if cursor == nil {
+		return r.client.ZRevRangeWithScores(ctx, key, 0, int64(limit-1)).Result()
+	}
+	return nil, errors.New("游标分页尚未实现：见 TODO(阶段 9.2)")
 }
 
 func (r *RedisRepository) AddScore(

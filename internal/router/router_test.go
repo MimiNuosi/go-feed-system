@@ -101,9 +101,9 @@ func (f *fakeHotRouteService) ListHot(
 	at time.Time,
 	cursor *hot.Cursor,
 	pageSize int,
-) ([]hot.RankedVideo, error) {
+) (*hot.Page, error) {
 	f.listHotCalls++
-	return f.listHotVideos, nil
+	return &hot.Page{Videos: f.listHotVideos}, nil
 }
 
 func (f *fakeHotRouteService) ListReadyByIDs(

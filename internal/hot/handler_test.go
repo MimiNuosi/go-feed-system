@@ -34,6 +34,8 @@ type fakeRecordViewService struct {
 	listPage   int
 	listVideos []RankedVideo
 	listHotErr error
+	listNext   string
+	listMore   bool
 	videosByID []video.Video
 	userMap    map[uint64]*user.User
 	likeCounts map[uint64]int64
@@ -58,13 +60,21 @@ func (f *fakeRecordViewService) ListHot(
 	at time.Time,
 	cursor *Cursor,
 	pageSize int,
-) ([]RankedVideo, error) {
+) (*Page, error) {
 	f.listCalls++
 	f.listWindow = window
 	f.listAt = at
 	f.listCursor = cursor
 	f.listPage = pageSize
-	return f.listVideos, f.listHotErr
+	if f.listHotErr != nil {
+		return nil, f.listHotErr
+	}
+
+	return &Page{
+		Videos:     f.listVideos,
+		NextCursor: f.listNext,
+		HasMore:    f.listMore,
+	}, nil
 }
 
 func (f *fakeRecordViewService) ListReadyByIDs(
@@ -228,18 +238,26 @@ func TestHandler_RecordView(t *testing.T) {
 func TestHandler_ListHot(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
+	validCursor, err := EncodeCursor(Cursor{Score: 20, VideoID: 103})
+	if err != nil {
+		t.Fatalf("encode cursor: %v", err)
+	}
+
 	tests := []struct {
 		name string
 
 		query         string
 		serviceVideos []RankedVideo
 		serviceErr    error
+		serviceNext   string
+		serviceMore   bool
 		wantStatus    int
 		wantCalls     int
 		wantWindow    Window
 		wantPageSize  int
 		wantBody      string
 		wantViewCount int64
+		wantCursorID  uint64
 	}{
 		{
 			name:          "默认分页返回热榜",
@@ -273,10 +291,23 @@ func TestHandler_ListHot(t *testing.T) {
 			wantCalls:  0,
 		},
 		{
-			name:       "cursor 暂不支持",
+			name:       "cursor 非法",
 			query:      "?window=1h&cursor=abc",
 			wantStatus: http.StatusBadRequest,
 			wantCalls:  0,
+		},
+		{
+			name:          "合法游标会透传给服务并返回下一页信息",
+			query:         "?window=1h&cursor=" + validCursor,
+			serviceVideos: []RankedVideo{{VideoID: 3, Score: 5}},
+			serviceNext:   "next-token",
+			serviceMore:   true,
+			wantStatus:    http.StatusOK,
+			wantCalls:     1,
+			wantWindow:    WindowOneHour,
+			wantPageSize:  DefaultHotPageSize,
+			wantBody:      `"next_cursor":"next-token"`,
+			wantCursorID:  103,
 		},
 		{
 			name:         "Service 参数错误",
@@ -303,6 +334,8 @@ func TestHandler_ListHot(t *testing.T) {
 			service := &fakeRecordViewService{
 				listVideos: tt.serviceVideos,
 				listHotErr: tt.serviceErr,
+				listNext:   tt.serviceNext,
+				listMore:   tt.serviceMore,
 				videosByID: []video.Video{
 					{
 						ID:          3,
@@ -370,6 +403,16 @@ func TestHandler_ListHot(t *testing.T) {
 						service.listPage,
 					)
 				}
+				if tt.wantCursorID != 0 {
+					if service.listCursor == nil ||
+						service.listCursor.VideoID != tt.wantCursorID {
+						t.Fatalf(
+							"expected cursor video ID %d, got %+v",
+							tt.wantCursorID,
+							service.listCursor,
+						)
+					}
+				}
 			}
 			if tt.wantBody != "" && !strings.Contains(response.Body.String(), tt.wantBody) {
 				t.Fatalf(
@@ -386,6 +429,16 @@ func TestHandler_ListHot(t *testing.T) {
 					t.Fatalf(
 						"expected body to contain %q, got %s",
 						expected,
+						response.Body.String(),
+					)
+				}
+			}
+
+			// 分页元数据要透传到响应里
+			if tt.serviceMore {
+				if !strings.Contains(response.Body.String(), `"has_more":true`) {
+					t.Fatalf(
+						"expected body to contain has_more true, got %s",
 						response.Body.String(),
 					)
 				}
