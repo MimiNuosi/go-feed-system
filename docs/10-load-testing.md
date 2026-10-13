@@ -36,6 +36,26 @@ vegeta 的 `-rate=N -duration=10s` 就是开环；`-rate=0` 是不限速打满�
 
 ## 环境与方法
 
+可重复执行的脚本在 `deploy/loadtest/`（含 README）：
+
+```text
+run.ps1           速率阶梯压测，逐档打印 QPS / 延迟分位数 / 成功率
+sample.ps1        跑一轮并采样容器 CPU、MySQL 连接数与"每请求 SQL 语句数"
+*.targets         三个被测目标（livez / hot / video_detail）
+```
+
+用法示例：
+
+```powershell
+$env:RATE_LIMIT_ENABLED='false'; docker compose up -d api
+./deploy/loadtest/run.ps1 -Target video_detail -Rates 500,1000,2000,3000,4000
+./deploy/loadtest/sample.ps1 -Target video_detail -Rate 4000 -Seconds 10
+```
+
+顺带记一个 PowerShell 的坑：`docker exec ... mysql -p$pw` 这种紧凑写法
+**不会**把变量展开成口令（`-u$user` 同理），必须写成
+`"--password=$pw"`。脚本里已经踩过这个坑并注明。
+
 ```text
 宿主          32 逻辑核 / 15.2 GB
 Docker        api、mysql、redis 各限 6 CPU / 6 GB（同一台机器上）
@@ -267,4 +287,5 @@ C. 调大 MySQL 连接池（MaxOpenConns 现在写死 20，也该做成配置）
 - [x] 压测中采样容器 CPU 与 MySQL 连接/查询数，定位瓶颈层。
 - [x] 10.5 两步优化（interpolateParams + 去掉多余校验）并复测，
       语句数 12 → 3，P95 17.9ms → 2.4ms，拐点 2500 → 5000 rps。
-- [ ] 把压测脚本固化到仓库（deploy/loadtest/），方便重复执行。
+- [x] 把压测脚本固化到仓库（deploy/loadtest/），并用
+      `deploy/loadtest/config_test.go` 保证目标文件格式和脚本前提不走样。
