@@ -38,7 +38,8 @@ XX 大学 | 软件工程 | 本科 | 20XX.09 - 20XX.06
 - **数据与中间件**：熟悉 MySQL（索引、事务、连接池、GORM、迁移脚本）与 Redis（缓存旁路、ZSET 排行榜、Lua 原子脚本、分布式锁、幂等去重）；熟悉 RabbitMQ（交换机 / 队列 / 重试与死信队列、幂等消费）
 - **分布式与一致性**：理解最终一致性与幂等重试语义；实现事务性 Outbox 保证业务写入与消息投递不丢，用去重键兜住重复消费；浏览量采用 Redis 增量 + 定时回写，先写库后确认
 - **可观测性与工程化**：Prometheus 指标 + Grafana 面板 + 结构化日志；分级探针区分关键依赖与可降级依赖；Docker Compose 多服务编排、多阶段 Dockerfile 构建、GitHub Actions 流水线
-- **性能分析**：熟悉 QPS / P95 / P99 与开环压测的意义；用 vegeta 做速率阶梯定位拐点，并用语句级测量发现数据库放大问题（详情接口每请求 SQL 由 12 条降至 3 条，同速率 P95 由 17.9ms 降至 2.4ms）
+- **性能分析**：熟悉 QPS / P95 / P99 与开环压测的意义；用 vegeta 做速率阶梯定位拐点，并用语句级测量发现数据库放大问题（详情接口每请求 SQL 由 12 条降至 3 条，同速率 P95 由 17.9ms 降至 2.4~6.0ms）
+- **测量严谨性**：先用小请求量做对照量出背景噪声（用 /livez 作对照组），并检查响应体大小确认压的是真实路径；曾因此发现"热榜和探针一样快"其实是压到了空榜单的假象
 - **C++**：C++11/17、STL、智能指针与 RAII；多线程与 std::mutex / condition_variable；Boost.Asio 多 reactor 网络模型；gRPC / Protobuf；手写二进制协议与粘包处理
 - **计算机基础**：TCP/IP、HTTP/HTTPS、Linux 常用命令与排查、Git
 
@@ -55,12 +56,13 @@ RabbitMQ 做事件驱动异步化，Docker Compose 一键起全栈环境。
 **个人职责与亮点**：
 
 - 从零搭建分层架构（Handler / Service / Repository + 显式依赖注入），把跨领域聚合上移到 Handler 层，避免包间循环依赖；统一错误码与请求 ID 贯穿日志与响应
-- Feed 流采用推拉结合：大 V 走写扩散收件箱（Redis List，按粉丝阈值分流），普通作者走读时回源；分页使用复合游标（created_at + id、score + videoID），保证同一时间戳/同一分数处的边界不重不漏
-- 热榜为 1h / 24h 滑动窗口 ZSET：单次 Lua 同时更新两个 bucket 保证原子性，member 使用定长补零 ID 让同分按 ID 稳定排序；配合 singleflight 与本地 fresh/stale 缓存抗击穿，压测下性能与零成本探针接口持平（4000 rps，P95 610µs）
+- Feed 流采用推拉结合：普通作者发布时写扩散到粉丝收件箱（Redis ZSet，score 用发布时间，Pipeline 批量写），粉丝数过阈值（默认 1000）的大 V 跳过写扩散、改在读时从 MySQL 按作者拉取再与收件箱结果合并去重；分页使用复合游标（created_at + id、score + videoID），保证同一时间戳/同一分数处的边界不重不漏
+- 热榜为 1h / 24h 滑动窗口 ZSET：单次 Lua 同时更新两个 bucket 保证原子性，member 使用定长补零 ID 让同分按 ID 稳定排序；排序结果用 singleflight 与本地 fresh/stale 缓存抗击穿，空榜时接口与探针持平（4000 rps，P95 1.66ms）
+- 用语句级测量定位热榜瓶颈：每页固定 3 条 MySQL 查询补齐作者与点赞数，有数据时 4000 rps 即饱和（吞吐掉到 1565 rps），已明确为下一步优化项
 - 用事务性 Outbox + RabbitMQ 保证视频发布事件不丢：业务写入与 Outbox 记录同事务提交，消费端带重连监督、重试队列与死信队列，重复消费由去重键兜住
 - 浏览量走 Redis 增量 + 定时回写 MySQL：先写库成功再删增量（ack），失败条目留在 Hash 中自动重试；点赞 / 评论按权重写榜，幂等分支不重复计分
 - 补齐可观测性与限流：Prometheus 指标（HTTP / 消费者 / Outbox / 回写）、Grafana 面板、分级探针；两层令牌桶限流（全局 + 按身份）额度可配置，探针豁免以避免"额度打满导致健康检查失败、容器反复重启"的雪崩
-- 压测发现详情接口每请求实际发出 12 条 SQL（prepared statement 的 PREPARE + EXECUTE 两次往返，加上点赞校验里重复查询视频是否存在），改为参数内联并去掉冗余校验后降至 3 条，同速率 P95 由 17.9ms 降至 2.4ms，容量拐点由 2500 提升到 5000 rps
+- 压测发现详情接口每请求实际发出 12 条 SQL（prepared statement 的 PREPARE + EXECUTE 两次往返，加上点赞校验里重复查询视频是否存在），改为参数内联并去掉冗余校验后降至 3 条，同速率 P95 由 17.9ms 降至 2.4~6.0ms（两次复测），容量拐点由 2500 提升到 5000 rps
 
 ### 分布式即时通讯系统（C++）｜个人独立开发｜20XX.XX - 20XX.XX
 
@@ -92,7 +94,7 @@ GitHub：____（建议放上，仓库里 README 要能看）
 
 | 简历条目 | 一定会被追问 | 你的答案落在哪 |
 | --- | --- | --- |
-| 推拉结合 + 阈值分流 | 阈值怎么定？小作者为什么不写扩散？ | docs/05-feed.md、docs/06-feed-scaling.md |
+| 推拉结合 + 阈值分流 | 大 V 为什么不写扩散？阈值怎么定？Redis 收件箱挂了怎么办？ | docs/06-feed-scaling.md、internal/feed/fanout.go |
 | 复合游标分页 | 为什么不用 offset？同分边界怎么办？ | docs/09-hot-ranking.md、internal/hot/cursor.go |
 | 滑动窗口 ZSET 热榜 | 为什么不固定窗口？多个 bucket 怎么合并？ | docs/09-hot-ranking.md |
 | singleflight + stale 缓存 | 击穿 / 穿透 / 雪崩各怎么防？Redis 挂了呢？ | internal/hot/service.go、cache.go |
@@ -103,3 +105,5 @@ GitHub：____（建议放上，仓库里 README 要能看）
 | C++ stub 池复用通道 | 池耗尽时阻塞 reactor 线程会怎样？ | 主动承认：会阻塞该线程上的其他连接；改进方向是非阻塞获取或协程 |
 | C++ 分布式锁 | 释放为什么必须用 Lua？锁过期了业务没做完怎么办？ | 代码里有 Lua CAS；续期（看门狗）目前没做，要主动说明 |
 | C++ 最小连接数负载均衡 | 登录计数漂移了怎么办？ | 主动承认：进程崩溃不会回退计数，需要 TTL 兜底或定期对账 |
+| 热榜与探针"持平" | 压的时候榜单里有数据吗？空榜和有数据差多少？ | 空榜零 SQL、有数据每页 3 条 SQL；README 性能章节 + docs/10 |
+| 压测结论的可信度 | 怎么确认压的是真实路径、不是空转？ | docs/10 §10.4、deploy/loadtest/README.md（看响应体大小与对照组的语句增量） |

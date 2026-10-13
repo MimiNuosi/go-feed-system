@@ -6,13 +6,15 @@ Feed 流与热榜，并把异步解耦、缓存一致性、限流与可观测性
 三个最值得看的点：
 
 ```text
-1. Feed 推拉结合 + 复合游标分页：大 V 走写扩散收件箱，普通作者读时回源；
-   游标带 (created_at, id) 与 (score, videoID)，同分/同毫秒边界不重不漏
-2. 滑动窗口热榜：1h/24h 双 bucket 用单次 Lua 原子更新，配合 singleflight
-   与本地 fresh/stale 缓存抗击穿；压测下性能与零成本探针接口持平
-   （4000 rps，P95 610µs）
+1. Feed 推拉结合 + 复合游标分页：普通作者写扩散进粉丝收件箱（Redis ZSet，
+   score 用发布时间），粉丝过阈值的大 V 跳过写扩散、改在读时从 MySQL 拉取，
+   再与收件箱结果合并去重；游标带 (created_at, id) 与 (score, videoID)，
+   同分/同毫秒边界不重不漏
+2. 滑动窗口热榜：1h/24h 双 bucket 用单次 Lua 原子更新，排序结果用
+   singleflight 与本地 fresh/stale 缓存抗击穿；但每页仍需 3 条 MySQL
+   查询补齐作者与点赞数，这是它当前的瓶颈（见"性能"与"已知局限"）
 3. 性能问题有据可查：用语句级测量发现详情接口每请求实际发出 12 条 SQL，
-   优化到 3 条，同速率 P95 由 17.9ms 降至 2.4ms，容量拐点 2500 → 5000 rps
+   优化到 3 条，同速率 P95 由 17.9ms 降至 2.4~6.0ms，容量拐点 2500 → 5000 rps
 ```
 
 ## 架构与请求链路
@@ -49,7 +51,7 @@ POST /api/v1/videos
 
 ## 关键设计
 
-- **推拉结合**：按粉丝数阈值决定写扩散还是读时回源，避免小作者也给每个粉丝写一份。见 [docs/06](docs/06-feed-scaling.md)
+- **推拉结合**：按粉丝数阈值（默认 1000）分流 —— 普通作者发布时写扩散到粉丝收件箱，大 V 跳过写扩散、改在读时按作者拉取，避免百万粉丝被逐一写入。见 [docs/06](docs/06-feed-scaling.md)、`internal/feed/fanout.go`
 - **复合游标分页**：不用 offset（并发插入会跳页），游标同时带排序键与主键，处理同分/同毫秒边界。见 [docs/09](docs/09-hot-ranking.md)、`internal/hot/cursor.go`
 - **滑动窗口热榜**：1h 用 1 分钟桶、24h 用 5 分钟桶，查询时合并；member 用定长补零 ID 让同分稳定排序
 - **防击穿**：singleflight 合并并发未命中 + 本地 fresh(5s)/stale(30s) 两级缓存，Redis 故障时降级返回 stale 数据
@@ -59,18 +61,26 @@ POST /api/v1/videos
 
 ## 性能
 
-单机 Docker（限 6 核 / 6GB）压测，客户端与服务同机，开环固定速率：
+单机 Docker（限 6 核 / 6GB）压测，客户端与服务同机，开环固定速率，
+数据量极小（个位数视频）。**热榜这一行的前提很重要**：
+空榜单和有数据是两条完全不同的路径，早期我拿空榜单的数字得出过错误结论。
 
 ```text
-接口                          4000 rps 下的延迟
-GET /livez（探针）             mean 540µs   P95 610µs     <- 天花板参考
-GET /api/v1/feed/hot           mean 566µs   P95 1.03ms    <- 缓存命中，与探针持平
-GET /api/v1/videos/1（优化前）  mean 6.27ms  P95 17.9ms
-GET /api/v1/videos/1（优化后）  mean 1.4ms   P95 2.4ms
+接口                            速率       mean       P95       说明
+GET /livez（探针）               4000 rps   540µs      610µs     天花板参考
+GET /api/v1/feed/hot（空榜）      4000 rps   1.16ms     1.66ms    零 SQL，纯缓存路径
+GET /api/v1/feed/hot（有数据）    500 rps    2.53ms     3.23ms    每请求 3 条 SQL
+GET /api/v1/feed/hot（有数据）    2000 rps   4.00ms     9.87ms    P99 30ms，开始吃紧
+GET /api/v1/feed/hot（有数据）    4000 rps   1.97s      3.94s     饱和：98% 成功，吞吐只到 1565 rps
+GET /api/v1/videos/1（优化前）    4000 rps   6.27ms     17.9ms
+GET /api/v1/videos/1（优化后）    4000 rps   1.4~2.1ms  2.4~6.0ms 两次复测
 ```
 
 详情接口每请求 SQL 语句数：**12.04 → 4.03 → 3.02**（分别对应参数内联、去掉冗余校验）。
-完整的测量方法、速率阶梯与瓶颈定位见 [docs/10](docs/10-load-testing.md)，
+热榜每请求固定 **3.00** 条 SQL（补齐作者与点赞），这正是它比探针慢数倍、
+且更早饱和的原因。
+
+完整的测量方法、速率阶梯、瓶颈定位与踩过的坑见 [docs/10](docs/10-load-testing.md)，
 脚本在 [`deploy/loadtest/`](deploy/loadtest/README.md)。
 
 ## 已知局限与后续规划
@@ -82,6 +92,9 @@ GET /api/v1/videos/1（优化后）  mean 1.4ms   P95 2.4ms
 4. 热榜第 1 段读取会把同一分数的成员整段读回，长尾数据下应改为 ZRANK + 限量 ZRANGE
 5. 视频只做容器级校验（ftyp/EBML），没有转码与编码级校验
 6. 未做真正的多实例部署验证（负载均衡、会话一致性）
+7. 热榜每页固定 3 条 MySQL 查询（补作者与点赞），有数据时比详情接口更早饱和
+   （4000 rps 已经顶不住，吞吐掉到 1565 rps）——这是当前最大的优化空间
+8. 热榜本地缓存的过期条目只判断 TTL、不做回收，长期运行会缓慢累积
 ```
 
 ## 技术栈
