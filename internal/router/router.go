@@ -58,14 +58,20 @@ func New(deps Dependencies) *gin.Engine {
 	engine.Use(middleware.Metrics(deps.Metrics))
 	engine.Use(middleware.Recovery(deps.Logger))
 
-	// 限流放在 Recovery 之后、业务路由之前：
+	// 全局限流放在 Recovery 之后、业务路由之前：
 	// 429 仍然会被 AccessLog 和 Metrics 记录，同时还挡在鉴权之前，
 	// 避免把 CPU 花在无效请求的 JWT 解析上。
 	if deps.GlobalRateLimit != nil {
 		engine.Use(deps.GlobalRateLimit)
 	}
-	if deps.IdentityRateLimit != nil {
-		engine.Use(deps.IdentityRateLimit)
+
+	// 身份限流的键是 userID，而 userID 是鉴权中间件写进 context 的，
+	// 所以它不能像全局限流那样挂在最外层：
+	// 挂在鉴权之前时 context 里还没有 userID，限流器只会看到空 key，
+	// 那一层就等于没生效。正确做法是挂在鉴权之后。
+	identityRateLimit := deps.IdentityRateLimit
+	if identityRateLimit == nil {
+		identityRateLimit = func(c *gin.Context) { c.Next() }
 	}
 
 	// 基础设施探针不放进 /api/v1，避免业务版本升级影响运维配置。
@@ -77,6 +83,7 @@ func New(deps Dependencies) *gin.Engine {
 	engine.GET(
 		"/api/v1/videos/:id",
 		deps.OptionalAuthMiddleware,
+		identityRateLimit,
 		deps.VideoHandler.GetDetail,
 	)
 	engine.GET("/api/v1/videos/:id/file", deps.VideoHandler.File)
@@ -90,17 +97,20 @@ func New(deps Dependencies) *gin.Engine {
 	v1.POST(
 		"/videos/:id/view",
 		deps.OptionalAuthMiddleware,
+		identityRateLimit,
 		deps.HotHandler.RecordView,
 	)
 	v1.GET(
 		"/feed/hot",
 		deps.OptionalAuthMiddleware,
+		identityRateLimit,
 		deps.HotHandler.ListHot,
 	)
 
 	// 2. 需要鉴权的接口组
 	auth := v1.Group("")
 	auth.Use(deps.AuthMiddleware) // 整个组统一挂载鉴权中间件
+	auth.Use(identityRateLimit)   // 身份限流必须在鉴权之后
 	{
 		auth.GET("/users/me", deps.UserHandler.Me)
 		auth.POST("/videos", deps.VideoHandler.Upload)

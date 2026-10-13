@@ -386,7 +386,7 @@ Redis Hash 本身就是待处理队列，删除动作就是 ack。
 - [x] 选择令牌桶实现位置：**本地进程内存**。
 - [x] 在鉴权之前加限流，超限返回 429（带 `Retry-After` 和 `RATE_LIMITED`）。
 - [x] 增加被限流次数的指标 `http_rate_limited_total{scope}`。
-- [ ] 令牌桶核心算法（留作练习，验收测试已写好）。
+- [x] 令牌桶核心算法（假时钟驱动的验收测试全绿）。
 - [ ] 设计匿名设备 ID 的来源与降级链（设备 ID 优先，IP 兜底）。
 - [ ] 更严格的按路由额度（例如登录失败锁定）。
 
@@ -437,9 +437,21 @@ internal/router/router.go             挂载位置：Recovery 之后、路由之
 cmd/api/main.go                       额度初值（刻意给得很宽）
 ```
 
-留给你实现的一处：`pkg/ratelimit/limiter.go` 里 `Allow` 的令牌补充算法
-（`TODO(阶段 9.6)`，注释里给了步骤）。验收测试现在必然是红的，
-实现完就会变绿。
+限流的实测结果（identity 层：突发 480、补充 4/秒）：
+
+```text
+连打 600 次已登录接口，耗时 1.33 秒
+HTTP 200 -> 485 次      （480 突发 + 1.33s * 4/s ≈ 5）
+HTTP 429 -> 115 次      Retry-After: 1，body code = RATE_LIMITED
+同时 /livez 和 /readyz 仍是 200（探针豁免生效）
+http_rate_limited_total{scope="identity"} 115
+```
+
+一个踩过的坑：身份限流的键来自 `authctx.UserID`，而它是鉴权中间件写进
+context 的。所以身份限流不能像全局限流那样挂在最外层 ——
+挂在鉴权之前时 context 里还没有 userID，限流器只会看到空 key 然后跳过，
+那一层就等于没生效。现在它挂在鉴权之后（auth 组内 + 三个可选鉴权路由上），
+并且有 `TestNew_IdentityRateLimitSeesAuthenticatedUser` 卡住这个顺序。
 
 ## 面试追问
 

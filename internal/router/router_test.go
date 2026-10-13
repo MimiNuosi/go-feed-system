@@ -771,3 +771,57 @@ func TestNew_AppliesRateLimitAndExemptsProbes(t *testing.T) {
 		t.Fatalf("expected limiter to be consulted once, got %d", limiter.calls)
 	}
 }
+
+// recordingDenyLimiter 记录收到的限流键，并一律拒绝。
+type recordingDenyLimiter struct {
+	keys []string
+}
+
+func (l *recordingDenyLimiter) Allow(key string) bool {
+	l.keys = append(l.keys, key)
+	return false
+}
+
+func (l *recordingDenyLimiter) RetryAfter() time.Duration {
+	return time.Second
+}
+
+// TestNew_IdentityRateLimitSeesAuthenticatedUser 验证身份限流挂在鉴权之后。
+//
+// 限流键是 userID，而 userID 是鉴权中间件写进 context 的。
+// 如果限流挂在鉴权之前，它只会看到空 key 然后跳过这一层 ——
+// 这个测试就是用来卡住这个顺序的。
+func TestNew_IdentityRateLimitSeesAuthenticatedUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	limiter := &recordingDenyLimiter{}
+	identityRateLimit := middleware.RateLimit(middleware.RateLimitOptions{
+		Scope:   "identity",
+		Limiter: limiter,
+		KeyFunc: middleware.IdentityKey,
+		Logger:  logger,
+	})
+
+	engine := New(Dependencies{
+		Logger:            logger,
+		HealthHandler:     health.NewHandler("test", logger),
+		IdentityRateLimit: identityRateLimit,
+		AuthMiddleware: func(c *gin.Context) {
+			ctx := authctx.WithUserID(c.Request.Context(), 7)
+			c.Request = c.Request.WithContext(ctx)
+			c.Next()
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/me", nil)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d body=%s", w.Code, w.Body.String())
+	}
+	if len(limiter.keys) != 1 || limiter.keys[0] != "user:7" {
+		t.Fatalf("expected limiter key user:7, got %v", limiter.keys)
+	}
+}
