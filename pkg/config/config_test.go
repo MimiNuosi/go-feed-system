@@ -128,3 +128,123 @@ func TestLoadRequiresRabbitMQURL(t *testing.T) {
 		t.Fatal("expected missing RABBITMQ_URL to fail validation")
 	}
 }
+
+func TestLoadRateLimitConfig(t *testing.T) {
+	setMinimalValidEnv := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("MYSQL_DSN", "user:pass@tcp(127.0.0.1:3306)/test")
+		t.Setenv("JWT_SECRET", strings.Repeat("x", 32))
+		t.Setenv("RABBITMQ_URL", "amqp://feed_app:secret@127.0.0.1:5672/")
+	}
+
+	clearRateLimitEnv := func(t *testing.T) {
+		t.Helper()
+		for _, key := range []string{
+			"RATE_LIMIT_ENABLED",
+			"RATE_LIMIT_GLOBAL_BURST",
+			"RATE_LIMIT_GLOBAL_INTERVAL",
+			"RATE_LIMIT_IDENTITY_BURST",
+			"RATE_LIMIT_IDENTITY_INTERVAL",
+		} {
+			t.Setenv(key, "")
+		}
+	}
+
+	t.Run("默认开启并使用默认额度", func(t *testing.T) {
+		setMinimalValidEnv(t)
+		clearRateLimitEnv(t)
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("load config: %v", err)
+		}
+		if !cfg.RateLimit.Enabled {
+			t.Error("expected rate limiting to be enabled by default")
+		}
+		if cfg.RateLimit.Global.Burst != defaultRateLimitGlobalBurst {
+			t.Errorf(
+				"expected global burst %d, got %d",
+				defaultRateLimitGlobalBurst,
+				cfg.RateLimit.Global.Burst,
+			)
+		}
+		if cfg.RateLimit.Global.Interval != defaultRateLimitGlobalInterval {
+			t.Errorf(
+				"expected global interval %v, got %v",
+				defaultRateLimitGlobalInterval,
+				cfg.RateLimit.Global.Interval,
+			)
+		}
+		if cfg.RateLimit.Identity.Burst != defaultRateLimitIdentityBurst {
+			t.Errorf(
+				"expected identity burst %d, got %d",
+				defaultRateLimitIdentityBurst,
+				cfg.RateLimit.Identity.Burst,
+			)
+		}
+		if cfg.RateLimit.Identity.Interval != defaultRateLimitIdentityInterval {
+			t.Errorf(
+				"expected identity interval %v, got %v",
+				defaultRateLimitIdentityInterval,
+				cfg.RateLimit.Identity.Interval,
+			)
+		}
+	})
+
+	t.Run("可以覆盖额度用于压测", func(t *testing.T) {
+		setMinimalValidEnv(t)
+		clearRateLimitEnv(t)
+		t.Setenv("RATE_LIMIT_GLOBAL_BURST", "100000")
+		t.Setenv("RATE_LIMIT_GLOBAL_INTERVAL", "10us")
+		t.Setenv("RATE_LIMIT_IDENTITY_BURST", "50000")
+		t.Setenv("RATE_LIMIT_IDENTITY_INTERVAL", "10us")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("load config: %v", err)
+		}
+		if cfg.RateLimit.Global.Burst != 100000 {
+			t.Errorf("expected global burst 100000, got %d", cfg.RateLimit.Global.Burst)
+		}
+		if cfg.RateLimit.Global.Interval != 10*time.Microsecond {
+			t.Errorf(
+				"expected global interval 10us, got %v",
+				cfg.RateLimit.Global.Interval,
+			)
+		}
+	})
+
+	t.Run("可以整体关闭限流", func(t *testing.T) {
+		setMinimalValidEnv(t)
+		clearRateLimitEnv(t)
+		t.Setenv("RATE_LIMIT_ENABLED", "false")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("load config: %v", err)
+		}
+		if cfg.RateLimit.Enabled {
+			t.Error("expected rate limiting to be disabled")
+		}
+	})
+
+	t.Run("非法时长报错", func(t *testing.T) {
+		setMinimalValidEnv(t)
+		clearRateLimitEnv(t)
+		t.Setenv("RATE_LIMIT_GLOBAL_INTERVAL", "fast")
+
+		if _, err := Load(); err == nil {
+			t.Fatal("expected an invalid duration to fail")
+		}
+	})
+
+	t.Run("额度非正数时报错", func(t *testing.T) {
+		setMinimalValidEnv(t)
+		clearRateLimitEnv(t)
+		t.Setenv("RATE_LIMIT_GLOBAL_BURST", "0")
+
+		if _, err := Load(); err == nil {
+			t.Fatal("expected a non-positive burst to fail validation")
+		}
+	})
+}

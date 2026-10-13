@@ -32,19 +32,26 @@ const (
 	defaultRabbitMQRetryDelay    = 5 * time.Second
 	defaultFanoutThreshold       = 1000
 	defaultBigAuthorCacheTTL     = time.Minute
+
+	defaultRateLimitEnabled          = true
+	defaultRateLimitGlobalBurst      = 2000
+	defaultRateLimitGlobalInterval   = time.Millisecond
+	defaultRateLimitIdentityBurst    = 480
+	defaultRateLimitIdentityInterval = 250 * time.Millisecond
 )
 
 // Config 保存应用启动时需要的全部配置。
 // 依赖从 main 显式传给各个组件，不通过全局变量获取。
 type Config struct {
-	HTTP     HTTPConfig
-	MySQL    MySQLConfig
-	Auth     AuthConfig
-	Storage  StorageConfig
-	Redis    RedisConfig
-	Outbox   OutboxConfig
-	RabbitMQ RabbitMQConfig
-	Feed     FeedConfig
+	HTTP      HTTPConfig
+	MySQL     MySQLConfig
+	Auth      AuthConfig
+	Storage   StorageConfig
+	Redis     RedisConfig
+	Outbox    OutboxConfig
+	RabbitMQ  RabbitMQConfig
+	Feed      FeedConfig
+	RateLimit RateLimitConfig
 }
 
 type HTTPConfig struct {
@@ -99,6 +106,26 @@ type FeedConfig struct {
 	BigAuthorCacheTTL       time.Duration
 }
 
+// RateLimitConfig 控制两层令牌桶限流的额度。
+//
+// 为什么放在配置里而不是写死常量：压测和排障时需要临时放开额度。
+// 限流额度不改的话，压到某个速率之后返回的全是 429，
+// 测到的是限流器的天花板，而不是系统本身的能力。
+type RateLimitConfig struct {
+	// Enabled 允许整体关闭限流，压测基线时用。
+	Enabled bool
+	// Global 是所有请求共用的桶。
+	Global RateLimitBucket
+	// Identity 是登录用户各自一个的桶。
+	Identity RateLimitBucket
+}
+
+// RateLimitBucket 是一个令牌桶的容量和补充速度。
+type RateLimitBucket struct {
+	Burst    int
+	Interval time.Duration
+}
+
 // Load 从环境变量和默认值构造配置。
 //
 // 当前只支持少量环境变量，后续增加 MySQL、Redis、RabbitMQ 时，
@@ -121,6 +148,20 @@ func Load() (Config, error) {
 	bigAuthorCacheTTL, err := durationFromEnv(
 		"FEED_BIG_AUTHOR_CACHE_TTL",
 		defaultBigAuthorCacheTTL,
+	)
+	if err != nil {
+		return Config{}, fmt.Errorf("load config: %w", err)
+	}
+	rateLimitGlobalInterval, err := durationFromEnv(
+		"RATE_LIMIT_GLOBAL_INTERVAL",
+		defaultRateLimitGlobalInterval,
+	)
+	if err != nil {
+		return Config{}, fmt.Errorf("load config: %w", err)
+	}
+	rateLimitIdentityInterval, err := durationFromEnv(
+		"RATE_LIMIT_IDENTITY_INTERVAL",
+		defaultRateLimitIdentityInterval,
 	)
 	if err != nil {
 		return Config{}, fmt.Errorf("load config: %w", err)
@@ -173,6 +214,23 @@ func Load() (Config, error) {
 				defaultFanoutThreshold,
 			),
 			BigAuthorCacheTTL: bigAuthorCacheTTL,
+		},
+		RateLimit: RateLimitConfig{
+			Enabled: boolFromEnv("RATE_LIMIT_ENABLED", defaultRateLimitEnabled),
+			Global: RateLimitBucket{
+				Burst: envOrDefaultInt(
+					"RATE_LIMIT_GLOBAL_BURST",
+					defaultRateLimitGlobalBurst,
+				),
+				Interval: rateLimitGlobalInterval,
+			},
+			Identity: RateLimitBucket{
+				Burst: envOrDefaultInt(
+					"RATE_LIMIT_IDENTITY_BURST",
+					defaultRateLimitIdentityBurst,
+				),
+				Interval: rateLimitIdentityInterval,
+			},
 		},
 	}
 
@@ -265,6 +323,18 @@ func (c Config) validate() error {
 	if c.Feed.BigAuthorCacheTTL <= 0 {
 		return fmt.Errorf("FEED_BIG_AUTHOR_CACHE_TTL must be positive")
 	}
+	if c.RateLimit.Global.Burst <= 0 {
+		return fmt.Errorf("RATE_LIMIT_GLOBAL_BURST must be positive")
+	}
+	if c.RateLimit.Global.Interval <= 0 {
+		return fmt.Errorf("RATE_LIMIT_GLOBAL_INTERVAL must be positive")
+	}
+	if c.RateLimit.Identity.Burst <= 0 {
+		return fmt.Errorf("RATE_LIMIT_IDENTITY_BURST must be positive")
+	}
+	if c.RateLimit.Identity.Interval <= 0 {
+		return fmt.Errorf("RATE_LIMIT_IDENTITY_INTERVAL must be positive")
+	}
 
 	return nil
 }
@@ -302,4 +372,16 @@ func durationFromEnv(key string, fallback time.Duration) (time.Duration, error) 
 	}
 
 	return parsed, nil
+}
+
+func boolFromEnv(key string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }

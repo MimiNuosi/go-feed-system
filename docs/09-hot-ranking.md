@@ -477,6 +477,11 @@ global   所有请求共用一个桶：长期平均 1000 rps，突发 2000
 identity 登录用户按 userID 各自一个桶：长期平均 4 rps，突发 480
 ```
 
+额度已经做成配置（`RATE_LIMIT_ENABLED`、`RATE_LIMIT_GLOBAL_BURST` /
+`_INTERVAL`、`RATE_LIMIT_IDENTITY_BURST` / `_INTERVAL`，见 `.env.example`）。
+这样压测时可以直接放开额度，否则测到的是限流器的天花板而不是系统能力，
+见 docs/10-load-testing.md。
+
 identity 这一层对匿名请求直接跳过，原因是按 IP 拿不到可信来源：
 关掉 XFF 采信之后所有匿名请求的对端地址都是同一个网桥地址，
 按 IP 限流会退化成"全站共用一个桶"，一个人就能把所有人的额度刷掉。

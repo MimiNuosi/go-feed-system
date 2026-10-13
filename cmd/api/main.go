@@ -24,7 +24,6 @@ import (
 	"go-feed-system/pkg/database"
 	"go-feed-system/pkg/metrics"
 	"go-feed-system/pkg/password"
-	"go-feed-system/pkg/ratelimit"
 	"go-feed-system/pkg/redis"
 	"go-feed-system/pkg/storage/local"
 	"go-feed-system/pkg/token"
@@ -34,19 +33,6 @@ import (
 )
 
 const version = "dev"
-
-// 限流初值刻意给得很宽：第一版只挡明显滥用，不做精细配额。
-//
-//	global   长期平均 1000 rps，允许 2000 的瞬时突发
-//	identity 长期平均 4 rps（每分钟 240），允许 480 的突发
-//
-// 更严的按路由额度（例如登录失败锁定）留到后面单独做。
-const (
-	globalRateBurst      = 2000
-	globalRateInterval   = time.Millisecond
-	identityRateBurst    = 480
-	identityRateInterval = 250 * time.Millisecond
-)
 
 func main() {
 	_ = godotenv.Load() // 自动加载同目录下的 .env
@@ -213,43 +199,16 @@ func run() error {
 		logger,
 	)
 
-	// 限流：额度放在进程内存里，理由见 pkg/ratelimit 的包注释。
-	globalLimiter, err := ratelimit.NewKeyedLimiter(ratelimit.Config{
-		Burst:    globalRateBurst,
-		Interval: globalRateInterval,
-	})
+	// 限流：额度放在进程内存里（理由见 pkg/ratelimit 的包注释），
+	// 额度本身来自配置，压测时可以临时放开。
+	globalRateLimit, identityRateLimit, err := newRateLimitHandlers(
+		cfg.RateLimit,
+		appMetrics,
+		logger,
+	)
 	if err != nil {
-		return fmt.Errorf("create global rate limiter: %w", err)
+		return fmt.Errorf("setup rate limiting: %w", err)
 	}
-
-	identityLimiter, err := ratelimit.NewKeyedLimiter(ratelimit.Config{
-		Burst:    identityRateBurst,
-		Interval: identityRateInterval,
-	})
-	if err != nil {
-		return fmt.Errorf("create identity rate limiter: %w", err)
-	}
-
-	// 探针和指标端点必须豁免：额度打满导致健康检查失败，
-	// 会让容器被判不健康反复重启，反而制造雪崩。
-	rateLimitExemptPaths := []string{"/livez", "/readyz", "/metrics"}
-
-	globalRateLimit := middleware.RateLimit(middleware.RateLimitOptions{
-		Scope:       "global",
-		Limiter:     globalLimiter,
-		KeyFunc:     middleware.GlobalKey,
-		ExemptPaths: rateLimitExemptPaths,
-		Metrics:     appMetrics,
-		Logger:      logger,
-	})
-	identityRateLimit := middleware.RateLimit(middleware.RateLimitOptions{
-		Scope:       "identity",
-		Limiter:     identityLimiter,
-		KeyFunc:     middleware.IdentityKey,
-		ExemptPaths: rateLimitExemptPaths,
-		Metrics:     appMetrics,
-		Logger:      logger,
-	})
 
 	engine := router.New(router.Dependencies{
 		Logger:            logger,
