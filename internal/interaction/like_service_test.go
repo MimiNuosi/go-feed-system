@@ -532,7 +532,6 @@ func TestLikeService_GetLikeState(t *testing.T) {
 		name          string
 		viewerID      uint64
 		videoID       uint64
-		mockVideoErr  error
 		mockCount     int64
 		mockCountErr  error
 		mockExists    bool
@@ -557,12 +556,6 @@ func TestLikeService_GetLikeState(t *testing.T) {
 			wantIsLikedBy: true,
 		},
 		{
-			name:         "视频不存在转换为 video.ErrNotFound",
-			videoID:      999,
-			mockVideoErr: video.ErrNotFound,
-			wantErr:      video.ErrNotFound,
-		},
-		{
 			name:         "计数错误保留原始错误链",
 			videoID:      1,
 			mockCountErr: errDBError,
@@ -572,11 +565,8 @@ func TestLikeService_GetLikeState(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			videoReader := &fakeVideoReader{
-				GetByIDFunc: func(ctx context.Context, id uint64) (*video.Video, error) {
-					return nil, tt.mockVideoErr
-				},
-			}
+			// 详情路径不该碰它：如果被调用了，CallCount 会在下面暴露出来
+			videoReader := &fakeVideoReader{}
 			likeRepo := &fakeLikeRepository{
 				CountByVideoFunc: func(ctx context.Context, videoID uint64) (int64, error) {
 					return tt.mockCount, tt.mockCountErr
@@ -588,6 +578,15 @@ func TestLikeService_GetLikeState(t *testing.T) {
 
 			svc := NewLikeService(likeRepo, videoReader, nil)
 			count, isLikedBy, err := svc.GetLikeState(context.Background(), tt.viewerID, tt.videoID)
+
+			// 核心回归断言：调用方（视频详情 Handler）已经加载过视频，
+			// 这里再查一次视频就是白白的数据库往返。
+			if videoReader.CallCount != 0 {
+				t.Fatalf(
+					"expected no video lookup on the detail path, got %d calls",
+					videoReader.CallCount,
+				)
+			}
 
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("expected err %v, got %v", tt.wantErr, err)

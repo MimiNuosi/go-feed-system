@@ -98,25 +98,35 @@ type LikeState struct {
 	IsLikedBy bool
 }
 
-// GetState 组合“点赞总数”和“当前用户是否点赞”。
-// 注意：这是未来视频详情聚合和 Feed 批量组装的基础，但当前不要
-// 把它直接塞进 VideoRepository。跨领域的组合应由应用层协调。
+// GetState 先校验视频存在，再组合“点赞总数”和“当前用户是否点赞”。
+//
+// 需要 404 语义的调用方用它。视频详情页不要用：详情路径上调用方
+// 已经加载过视频，这里的校验会变成一次多余的数据库往返，
+// 详情页应该用 GetLikeState。
 func (s *LikeService) GetState(ctx context.Context, userID, videoID uint64) (*LikeState, error) {
-	// 1. 校验 videoID
 	if videoID == 0 {
 		return nil, ErrInvalidInput
 	}
 
-	// 2. 确认视频存在
-	_, err := s.videos.GetByID(ctx, videoID)
-	if err != nil {
+	// 确认视频存在，把「目标不存在」翻译成互动领域的错误
+	if _, err := s.videos.GetByID(ctx, videoID); err != nil {
 		if errors.Is(err, video.ErrNotFound) {
 			return nil, ErrInvalidTarget
 		}
 		return nil, fmt.Errorf("get state: check video: %w", err)
 	}
 
-	// 3. 统计点赞总数
+	return s.likeState(ctx, userID, videoID)
+}
+
+// likeState 读取点赞统计：先算总数，登录用户再查是否点过赞。
+//
+// 匿名用户（userID == 0）只查一次：他的“是否点赞”必然是 false。
+func (s *LikeService) likeState(ctx context.Context, userID, videoID uint64) (*LikeState, error) {
+	if videoID == 0 {
+		return nil, ErrInvalidInput
+	}
+
 	count, err := s.likes.CountByVideoID(ctx, videoID)
 	if err != nil {
 		return nil, fmt.Errorf("get state: count likes: %w", err)
@@ -124,12 +134,10 @@ func (s *LikeService) GetState(ctx context.Context, userID, videoID uint64) (*Li
 
 	state := &LikeState{Count: count, IsLikedBy: false}
 
-	// 4. 匿名用户，直接返回
 	if userID == 0 {
 		return state, nil
 	}
 
-	// 5. 登录用户，查询是否点赞
 	isLiked, err := s.likes.Exists(ctx, userID, videoID)
 	if err != nil {
 		return nil, fmt.Errorf("get state: check exists: %w", err)
@@ -141,10 +149,14 @@ func (s *LikeService) GetState(ctx context.Context, userID, videoID uint64) (*Li
 
 // GetLikeState 是给 video 包使用的窄接口适配方法。
 //
+// 它刻意不校验视频是否存在：调用方（视频详情 Handler）已经加载过视频，
+// 再校验一次就是白白多一轮数据库往返 —— 压测里这占了详情请求
+// 4 条查询中的 1 条。
+//
 // 它将互动领域的错误转换成 video 包可以识别的错误，
 // 避免 video 包为了处理详情响应而反向依赖 interaction 包。
 func (s *LikeService) GetLikeState(ctx context.Context, viewerID, videoID uint64) (int64, bool, error) {
-	state, err := s.GetState(ctx, viewerID, videoID)
+	state, err := s.likeState(ctx, viewerID, videoID)
 	if err != nil {
 		// 处理 ErrInvalidTarget
 		if errors.Is(err, ErrInvalidTarget) {

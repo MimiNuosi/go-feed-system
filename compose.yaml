@@ -80,7 +80,10 @@ services:
       - .env
     environment:
       HTTP_ADDR: 0.0.0.0:8080
-      MYSQL_DSN: ${MYSQL_USER:-feed_app}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE:-go_feed_system}?charset=utf8mb4&parseTime=True&loc=Local
+      # interpolateParams=true：参数在客户端做转义，一条查询只发一次 COM_QUERY，
+      # 省掉 prepared statement 的 PREPARE + EXECUTE 两次往返。
+      # 前提是 DSN 里必须指定 charset（多字节字符集下客户端转义才安全）。
+      MYSQL_DSN: ${MYSQL_USER:-feed_app}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE:-go_feed_system}?charset=utf8mb4&parseTime=True&loc=Local&interpolateParams=true
       REDIS_ADDR: redis:6379
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-feed_app}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672/
