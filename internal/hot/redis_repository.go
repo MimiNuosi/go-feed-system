@@ -2,7 +2,6 @@ package hot
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -272,7 +271,60 @@ func (r *RedisRepository) rangeFromCursor(
 	if cursor == nil {
 		return r.client.ZRevRangeWithScores(ctx, key, 0, int64(limit-1)).Result()
 	}
-	return nil, errors.New("游标分页尚未实现：见 TODO(阶段 9.2)")
+	// 游标的分数转成字符串（Redis 用字符串传参数）
+	scoreStr := strconv.FormatFloat(cursor.Score, 'f', -1, 64)
+	// 游标 member 转成 20 位补零格式（和 ZSet 里存的格式一致）
+	cursorMember := formatVideoID(cursor.VideoID)
+
+	result := make([]redis.Z, 0, limit)
+
+	// ========== 第 1 段：同分带内，member < cursorMember 的元素 ==========
+	//
+	// ZRANGEBYSCORE 返回升序（同分内 member 升序）。
+	// 我们要"member < cursorMember"的，它们在升序列表的左侧。
+	// 从尾部往前扫，收集 member < cursorMember 的。
+	sameScore, err := r.client.ZRangeByScoreWithScores(ctx, key, &redis.ZRangeBy{
+		Min: scoreStr,
+		Max: scoreStr,
+	}).Result()
+	if err != nil {
+		return nil, fmt.Errorf("zrangebyscore same score: %w", err)
+	}
+
+	for i := len(sameScore) - 1; i >= 0 && len(result) < limit; i-- {
+		member, ok := sameScore[i].Member.(string)
+		if !ok {
+			continue
+		}
+		if member < cursorMember {
+			result = append(result, sameScore[i])
+		}
+	}
+
+	// 第 1 段已经够 limit，不用查第 2 段
+	if len(result) >= limit {
+		return result, nil
+	}
+
+	// ========== 第 2 段：严格更低分的元素 ==========
+	//
+	// ZREVRANGEBYSCORE 按 (score DESC, member DESC) 排序返回。
+	// Max 用 "(score" 表示排他——严格小于 cursor.Score。
+	// Count = 还差多少条。
+	remaining := limit - len(result)
+	rest, err := r.client.ZRevRangeByScoreWithScores(ctx, key, &redis.ZRangeBy{
+		Max:    "(" + scoreStr,
+		Min:    "-inf",
+		Offset: 0,
+		Count:  int64(remaining),
+	}).Result()
+	if err != nil {
+		return nil, fmt.Errorf("zrevrangebyscore lower scores: %w", err)
+	}
+
+	result = append(result, rest...)
+
+	return result, nil
 }
 
 func (r *RedisRepository) AddScore(

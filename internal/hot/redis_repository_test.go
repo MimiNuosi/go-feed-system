@@ -167,7 +167,7 @@ func TestRedisRepository_TopVideoIDsIntegration(t *testing.T) {
 			wantScore: []float64{5, 5},
 		},
 		{
-			name:    "cursor 暂不支持",
+			name:    "游标 videoID 为 0 被拒绝",
 			window:  WindowOneHour,
 			at:      at,
 			cursor:  &Cursor{},

@@ -174,7 +174,18 @@ internal/hot/handler.go
   cursor 参数解析               非法游标返回 400 INVALID_ARGUMENT
   透传 HasMore / NextCursor     写进 feedmodel.Page
 internal/hot/redis_repository.go
-  rangeFromCursor               第一页已可用；后续页是 TODO
+  rangeFromCursor               分两段读：同分接续 + 更低分数补齐
+```
+
+真实链路实测（4 个视频都是 1 分，构成一个 4 成员的同分带）：
+
+```text
+ZSET 顺序:  4(1) 3(1) 2(1) 1(1)
+第一页 page_size=2 -> ids=4,3   has_more=true
+  next_cursor=eyJzY29yZSI6MSwidmlkZW9faWQiOjN9   （即 score=1, video_id=3）
+第二页 -> ids=2,1               has_more=false   （边界项 3 没有重复出现）
+两页合并 = 4,3,2,1，无重复、无遗漏
+非法游标 -> 400 {"code":"INVALID_ARGUMENT","message":"invalid cursor"}
 ```
 
 为什么游标必须同时带上 videoID，而不是只带分数：
@@ -208,6 +219,13 @@ internal/hot/redis_repository.go
 TEST_REDIS_ADDR=<addr> TEST_REDIS_DB=15 TEST_REDIS_PASSWORD=<pass> \
   go test -run TopVideoIDsPaginationIntegration ./internal/hot/
 ```
+
+已知的优化点（不影响正确性）：第 1 段用的是
+`ZRangeByScoreWithScores(Min=score, Max=score)`，会把同一个分数上的
+成员整段读回内存。如果某个分数上挂了大量视频（长尾数据里很常见），
+每次翻页都要多读一大段。更省的做法是先用 `ZRANK` 拿到游标 member 的排名 r，
+再用 `ZRANGE(key, max(0, r-limit), r-1)` 只取紧邻游标的那 limit 条，
+复杂度从 O(同分带大小) 降到 O(log n + limit)。
 
 ## 热门 Feed 查询
 
@@ -317,7 +335,7 @@ videos.view_count BIGINT UNSIGNED NOT NULL DEFAULT 0
 - [x] 实现浏览、点赞、评论热度加权（view +1、like +3、comment +5，取消与删除写负分）。
 - [x] 实现 bucket 合并查询（`ZUNIONSTORE` 到临时 ZSET）。
 - [x] 处理同分排序（20 位补零 member，等价于同分时 videoID 大的在前）。
-- [ ] 处理游标分页（留作练习，验收测试已写好，见本轮交付说明）。
+- [x] 处理游标分页（游标编解码、pageSize+1 判 has_more、同分接续读取）。
 - [x] 过滤不可见视频（`ListReadyByIDs`，查不到的 ID 直接跳过）。
 
 ### 9.3 热门 Feed
