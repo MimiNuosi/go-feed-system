@@ -88,6 +88,15 @@ func (l *KeyedLimiter) Size() int {
 
 // Allow 判断某个 key 现在能否放行一个请求。
 //
+// 令牌桶的模型：桶里存着令牌，每个请求消耗一个；令牌按固定速率补充，
+// 桶满之后多余的补充直接丢弃（clamp）。于是它同时约束两件事：
+//
+//	长期平均速率 = 1 / Interval
+//	瞬时突发上限 = Burst
+//
+// 补充是"按经过的时间一次性算出来的"，不是定时任务：
+// 请求到来时才根据 elapsed 补算，所以空闲期间不占任何 CPU。
+//
 // 空 key 一律放行：调用方（中间件）已经决定"没有身份维度就跳过这一层"，
 // 这里再兜一次底，避免把所有人算成同一个身份。
 func (l *KeyedLimiter) Allow(key string) bool {
@@ -113,26 +122,29 @@ func (l *KeyedLimiter) Allow(key string) bool {
 	}
 	b.lastSeen = now
 
-	// TODO(阶段 9.6)：令牌桶的核心算法由你实现。
-	//
-	// 目标：按经过的时间补充令牌，桶里不足一个令牌时拒绝这次请求。
-	//
-	// 可用的字段：
-	//   b.tokens           当前令牌数（float64，因为补充是连续的小数）
-	//   b.lastRefill       上次补充的时间
-	//   l.config.Burst     桶容量
-	//   l.config.Interval  补充一个令牌需要的时间
-	//
-	// 建议步骤：
-	//   1. elapsed := now.Sub(b.lastRefill)
-	//   2. 按时间补充：b.tokens += float64(elapsed) / float64(l.config.Interval)
-	//   3. 不能超过桶容量，超过就 clamp 回 Burst
-	//   4. b.lastRefill = now
-	//   5. 令牌够 1 就扣掉并返回 true，否则返回 false
-	//
-	// 注意：一定要用乘除算，不要写 for 循环一个个加令牌。
-	// 空闲一小时后循环要跑几百万次，等于自己给自己造了一个卡顿点。
-	return true
+	// ========== 步骤 1：算经过的时间 ==========
+	elapsed := now.Sub(b.lastRefill)
+
+	// ========== 步骤 2：按比例补充令牌 ==========
+	// elapsed / Interval = 该补多少个令牌
+	refill := float64(elapsed) / float64(l.config.Interval)
+	b.tokens += refill
+
+	// ========== 步骤 3：clamp 到 Burst ==========
+	// 防止空闲一天后令牌无限增长
+	if b.tokens > float64(l.config.Burst) {
+		b.tokens = float64(l.config.Burst)
+	}
+
+	// ========== 步骤 4：更新 lastRefill ==========
+	b.lastRefill = now
+
+	// ========== 步骤 5：够一个就扣 ==========
+	if b.tokens >= 1 {
+		b.tokens -= 1
+		return true
+	}
+	return false
 }
 
 // sweepLocked 回收长期空闲的桶。调用方必须持有锁。
