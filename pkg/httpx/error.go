@@ -23,6 +23,7 @@ const (
 	ErrorCodeNotFound           ErrorCode = "NOT_FOUND"
 	ErrorCodeConflict           ErrorCode = "CONFLICT"
 	ErrorCodeForbidden          ErrorCode = "FORBIDDEN"
+	ErrorCodeRateLimited        ErrorCode = "RATE_LIMITED"
 	ErrorCodeInternal           ErrorCode = "INTERNAL"
 )
 
@@ -66,6 +67,8 @@ func StatusCode(code ErrorCode) int {
 		return http.StatusConflict
 	case ErrorCodeForbidden:
 		return http.StatusForbidden
+	case ErrorCodeRateLimited:
+		return http.StatusTooManyRequests
 	case ErrorCodeInternal:
 		fallthrough
 	default:

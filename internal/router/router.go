@@ -19,6 +19,8 @@ type Dependencies struct {
 	Logger                 *slog.Logger
 	Metrics                middleware.HTTPMetrics
 	MetricsHandler         http.Handler
+	GlobalRateLimit        gin.HandlerFunc
+	IdentityRateLimit      gin.HandlerFunc
 	HealthHandler          *health.Handler
 	UserHandler            *user.Handler
 	AuthMiddleware         gin.HandlerFunc
@@ -55,6 +57,16 @@ func New(deps Dependencies) *gin.Engine {
 	engine.Use(middleware.AccessLog(deps.Logger))
 	engine.Use(middleware.Metrics(deps.Metrics))
 	engine.Use(middleware.Recovery(deps.Logger))
+
+	// 限流放在 Recovery 之后、业务路由之前：
+	// 429 仍然会被 AccessLog 和 Metrics 记录，同时还挡在鉴权之前，
+	// 避免把 CPU 花在无效请求的 JWT 解析上。
+	if deps.GlobalRateLimit != nil {
+		engine.Use(deps.GlobalRateLimit)
+	}
+	if deps.IdentityRateLimit != nil {
+		engine.Use(deps.IdentityRateLimit)
+	}
 
 	// 基础设施探针不放进 /api/v1，避免业务版本升级影响运维配置。
 	engine.GET("/livez", deps.HealthHandler.Live)

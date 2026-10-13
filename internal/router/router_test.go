@@ -700,3 +700,74 @@ func TestNew_IgnoresForwardedFor(t *testing.T) {
 		t.Fatalf("X-Forwarded-For 必须被忽略: expected 203.0.113.7, got %q", got)
 	}
 }
+
+// alwaysDenyLimiter 模拟额度已经用光。
+type alwaysDenyLimiter struct {
+	calls int
+}
+
+func (l *alwaysDenyLimiter) Allow(key string) bool {
+	l.calls++
+	return false
+}
+
+func (l *alwaysDenyLimiter) RetryAfter() time.Duration {
+	return time.Second
+}
+
+// TestNew_AppliesRateLimitAndExemptsProbes 验证限流确实挂在请求链路上，
+// 同时探针被豁免：额度打满时健康检查仍然通过，否则容器会被判不健康重启。
+func TestNew_AppliesRateLimitAndExemptsProbes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	limiter := &alwaysDenyLimiter{}
+	rateLimit := middleware.RateLimit(middleware.RateLimitOptions{
+		Scope:       "global",
+		Limiter:     limiter,
+		KeyFunc:     middleware.GlobalKey,
+		ExemptPaths: []string{"/livez", "/readyz", "/metrics"},
+		Logger:      logger,
+	})
+
+	engine := New(Dependencies{
+		Logger:          logger,
+		HealthHandler:   health.NewHandler("test", logger),
+		GlobalRateLimit: rateLimit,
+	})
+
+	tests := []struct {
+		name       string
+		path       string
+		wantStatus int
+	}{
+		{name: "探针豁免限流", path: "/livez", wantStatus: http.StatusOK},
+		{
+			name:       "业务路由被限流",
+			path:       "/api/v1/videos/1/file",
+			wantStatus: http.StatusTooManyRequests,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			w := httptest.NewRecorder()
+			engine.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf(
+					"expected status %d, got %d body=%s",
+					tt.wantStatus,
+					w.Code,
+					w.Body.String(),
+				)
+			}
+		})
+	}
+
+	// 只有业务路由那一次真正问过限流器。
+	if limiter.calls != 1 {
+		t.Fatalf("expected limiter to be consulted once, got %d", limiter.calls)
+	}
+}

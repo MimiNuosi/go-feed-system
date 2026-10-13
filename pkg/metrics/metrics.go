@@ -16,9 +16,10 @@ import (
 type Metrics struct {
 	registry *prometheus.Registry
 
-	httpInFlight *prometheus.GaugeVec
-	httpRequests *prometheus.CounterVec
-	httpDuration *prometheus.HistogramVec
+	httpInFlight    *prometheus.GaugeVec
+	httpRequests    *prometheus.CounterVec
+	httpDuration    *prometheus.HistogramVec
+	httpRateLimited *prometheus.CounterVec
 
 	consumerReconnect *prometheus.CounterVec
 	consumerConnected prometheus.Gauge
@@ -52,6 +53,13 @@ func New() *Metrics {
 			Buckets: prometheus.DefBuckets,
 		},
 		[]string{"method", "route"},
+	)
+	httpRateLimited := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "http_rate_limited_total",
+			Help: "Total number of HTTP requests rejected by the rate limiter.",
+		},
+		[]string{"scope"},
 	)
 	consumerReconnect := prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -92,6 +100,7 @@ func New() *Metrics {
 		httpInFlight,
 		httpRequests,
 		httpDuration,
+		httpRateLimited,
 		consumerReconnect,
 		consumerConnected,
 		consumerDLQ,
@@ -105,6 +114,7 @@ func New() *Metrics {
 		httpInFlight:      httpInFlight,
 		httpRequests:      httpRequests,
 		httpDuration:      httpDuration,
+		httpRateLimited:   httpRateLimited,
 		consumerReconnect: consumerReconnect,
 		consumerConnected: consumerConnected,
 		consumerDLQ:       consumerDLQ,
@@ -154,6 +164,10 @@ func (m *Metrics) IncDLQMessage(reason string) {
 
 func (m *Metrics) IncOutboxPublish(result string) {
 	m.outboxPublish.WithLabelValues(result).Inc()
+}
+
+func (m *Metrics) IncRateLimited(scope string) {
+	m.httpRateLimited.WithLabelValues(scope).Inc()
 }
 
 func (m *Metrics) IncViewWriteback(result string) {
