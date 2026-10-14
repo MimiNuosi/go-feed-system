@@ -368,6 +368,38 @@
     $('do-like').textContent = v.is_liked_by ? '取消点赞' : '点赞';
   }
 
+  // 重新拉一次详情，用于点赞后与浏览回写后刷新页面上的数字
+  function refreshDetail() {
+    var current = state.detail;
+    if (!current) { return Promise.resolve(); }
+    return api('/videos/' + current.id).then(function (fresh) {
+      if (state.detail && state.detail.id === fresh.id) {
+        state.detail = fresh;
+        renderDetail();
+      }
+    });
+  }
+
+  // 播放满 3 秒自动记一次浏览。
+  //
+  // 播放量走的是"Redis 增量 + 定时回写 MySQL"：请求只把增量写进 Redis，
+  // 后台 worker 每 5 秒批量回写一次 MySQL。所以数字不会立刻变，
+  // 最多要等一个回写周期（这里按 6 秒留点余量）刷新详情才看得到 +1。
+  // 服务端还有 5 分钟去重（同一个用户对同一个视频只算一次），
+  // 重复提交不会把播放量刷上去，前端记一份本地标记只是为了少发无用请求。
+  var viewRecorded = {};
+  $('player').addEventListener('timeupdate', function () {
+    var id = state.detail && state.detail.id;
+    if (!id || viewRecorded[id]) { return; }
+    if ($('player').currentTime < 3) { return; }
+
+    viewRecorded[id] = true;
+    api('/videos/' + id + '/view', { method: 'POST' }).then(function () {
+      toast('已记录浏览，约 6 秒后播放量刷新（同一用户 5 分钟内只计一次）');
+      setTimeout(refreshDetail, 6000);
+    }).catch(function (err) { toast(err.message, true); });
+  });
+
   function renderComments(items) {
     var list = $('comment-list');
     list.textContent = '';
@@ -465,7 +497,10 @@
     var id = state.detail && state.detail.id;
     if (!id) { return; }
     withErrorDisplay(api('/videos/' + id + '/view', { method: 'POST' }).then(function () {
-      toast('已记录浏览（去热榜看看它有没有上来）');
+      toast('已记录浏览，约 6 秒后播放量刷新');
+      setTimeout(refreshDetail, 6000);
+      // 手动按钮也同步本地标记，避免随后自动记录再发一次同样的请求。
+      viewRecorded[id] = true;
     }));
   };
 
@@ -474,11 +509,9 @@
     if (!v) { return; }
     var method = v.is_liked_by ? 'DELETE' : 'POST';
     withErrorDisplay(api('/videos/' + v.id + '/like', { method: method }).then(function () {
-      return api('/videos/' + v.id);
-    }).then(function (fresh) {
-      state.detail = fresh;
-      renderDetail();
-      toast(fresh.is_liked_by ? '已点赞' : '已取消点赞');
+      return refreshDetail();
+    }).then(function () {
+      toast(state.detail.is_liked_by ? '已点赞' : '已取消点赞');
     }));
   };
 

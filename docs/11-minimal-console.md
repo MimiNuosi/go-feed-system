@@ -131,6 +131,48 @@ API 层（按页面的调用顺序逐条跑通）：
 顺带用接口层复现了最初的困惑：用户 106（"333"）的作品列表能正常列出他的《老吴》
 （`GET /api/v1/users/106/videos` -> 1 条），不存在的用户返回 404，非法游标返回 400。
 
+## 播放量为什么"看完不涨"（三个原因叠在一起）
+
+在控制台点开视频、看完、回列表，播放量没变。排查下来是三件事，每一件单独看都是对的：
+
+```text
+1. 播放本身不会发请求。播放量要显式 POST /api/v1/videos/:id/view 才会记，
+   而控制台原来只有一个「记录一次浏览」按钮在调它。这是控制台的缺口，不是后端的问题。
+2. 计数是异步落库的。/view 只把增量写进 Redis，MySQL 由回写 Worker 每 5 秒批量更新。
+3. 同一个用户对同一个视频 5 分钟内只算一次（去重键 TTL 5 分钟），这是防刷量。
+```
+
+对应到代码：`/view` 在 Redis 里用一段 Lua 原子地做三件事 ——
+`SET NX` 去重键、`HINCRBY` 待回写增量、`ZINCRBY` 热榜分数
+（`internal/hot/redis_repository.go` 的 `recordViewScript`）；
+`internal/hot/writeback.go` 的 `ViewWritebackWorker` 每 5 秒把这批增量
+`UPDATE videos SET view_count = view_count + delta` 累加进 MySQL。
+
+**修复的是第 1 条**：控制台给播放器加了 `timeupdate` 监听，播满 3 秒自动提交一次浏览，
+并在 6 秒后重新拉一次详情把数字刷出来。第 2、3 条是设计，不是缺陷，所以提示语里
+直接写清楚"约 6 秒后刷新、同一用户 5 分钟内只计一次"。
+
+实测（视频 90，新注册用户 123）：
+
+```text
+before  view_count=0
+POST /videos/90/view   -> 204
++7s     view_count=1      （等到了一个回写周期）
+POST /videos/90/view   -> 204   （同一用户再点一次）
++7s     view_count=1      （被 5 分钟去重挡下）
+```
+
+浏览器层同样验证过：打开《控制台上传测试》（id=75，播放 0）→ 点播放 →
+4.5 秒后出现提示"已记录浏览，约 6 秒后播放量刷新" → 再等 7 秒，详情变成"播放 1"。
+
+**这套设计换来了什么**：一次播放 = 一次 Redis 写入，而不是一条
+`UPDATE videos SET view_count = view_count + 1`。热点视频 1 万次播放就是 1 万次行锁竞争，
+异步回写把它压成每 5 秒一条批量更新。
+
+**代价**：进程死在"增量进了 Redis、还没回写 MySQL"之间，这部分播放量会丢；
+写库成功但 `HDEL` 失败会多算一次。回写里的顺序因此是"先写库、后 ack"，
+取舍是宁可多算、不可少算（和 outbox 的思路一致）。
+
 ## 顺手修掉的一个回归（值得记）
 
 **现象**：上传接口返回 500 `INTERNAL`，而阶段 9 的端到端测试里它是好的。
@@ -180,6 +222,9 @@ go test -count=1 ./internal/outbox/ ./internal/video/
 2. `go:embed` 与读磁盘文件各有什么取舍？
 3. `interpolateParams` 带来了什么好处、又踩了什么坑？为什么只有写路径会炸？
 4. 你的压测覆盖写接口了吗？如果没覆盖，能得出什么结论、不能得出什么结论？
+5. 播放量为什么不做成同步 `UPDATE ... +1`？异步回写丢了增量怎么办？
+6. 去重键为什么要带 viewerKey？如果只按 videoID 去重会出什么问题？
+7. 为什么 `/view` 对重复浏览返回 204 而不是 409？
 
 ## 当前任务
 
@@ -188,4 +233,5 @@ go test -count=1 ./internal/outbox/ ./internal/video/
 - [x] 修复 outbox JSON 列的写入回归，并用生产同款 DSN 验证集成测试
 - [x] 补 `GET /api/v1/users/:id/videos` 并在控制台加"我的视频"页
 - [x] 补 `GET /api/v1/feed/latest` 与控制台"最新"页（内容冷启动入口）
+- [x] 播放满 3 秒自动记录浏览，并解释播放量延迟刷新的三个原因
 - [ ] （可选）升级成 Vue/Vite 工程，覆盖"全栈"投递面
