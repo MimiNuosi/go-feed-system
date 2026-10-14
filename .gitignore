@@ -28,3 +28,6 @@ Thumbs.db
 
 # 测试覆盖率文件
 coverage.out
+
+# 个人材料：只留在本地，不推送（简历、面试速查等）
+docs/private/

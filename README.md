@@ -300,4 +300,3 @@ go build ./cmd/...
 - [阶段 8：交付、Docker Compose 与 CI](docs/08-delivery-and-ci.md)
 - [阶段 9：热门 Feed、滑动窗口热榜与防击穿](docs/09-hot-ranking.md)
 - [阶段 10：压测与性能调优](docs/10-load-testing.md)
-- [简历草稿与面试追问对照表](docs/resume-draft.md)
