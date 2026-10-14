@@ -121,7 +121,7 @@ func TestGORMRepository_CreateWithOutbox(t *testing.T) {
 		}
 
 		var payload outbox.VideoPublishedPayload
-		if err := json.Unmarshal(storedEvent.Payload, &payload); err != nil {
+		if err := json.Unmarshal([]byte(storedEvent.Payload), &payload); err != nil {
 			t.Fatalf("unmarshal stored payload: %v", err)
 		}
 		if payload.VideoID != video.ID {
@@ -142,7 +142,7 @@ func TestGORMRepository_CreateWithOutbox(t *testing.T) {
 		repo := NewGORMRepository(tx, outboxRepo)
 
 		existingEvent := newOutboxTestEvent()
-		existingEvent.Payload = []byte(`{"existing":true}`)
+		existingEvent.Payload = `{"existing":true}`
 		if err := outboxRepo.Create(context.Background(), existingEvent); err != nil {
 			t.Fatalf("create conflicting outbox event: %v", err)
 		}

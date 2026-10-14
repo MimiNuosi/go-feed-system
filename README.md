@@ -137,12 +137,13 @@ cmd/dlqctl           DLQ 查询与重放 CLI
 cmd/feedrebuild      Feed Inbox 重建 CLI
 
 internal/            用户、视频、互动、Feed 等业务模块
+internal/web         内嵌的最小控制台页面（go:embed 打包进二进制）
 pkg/                 配置、日志、数据库、Redis、RabbitMQ、指标等基础能力
 migrations/          只读 SQL 迁移
 deploy/prometheus    Prometheus 配置与告警
 deploy/grafana       Grafana 数据源和 Dashboard
 deploy/loadtest      vegeta 压测脚本与目标文件
-docs/                分阶段设计记录、压测报告、简历草稿
+docs/                分阶段设计记录与压测报告
 ```
 
 ## Docker Compose 启动
@@ -187,6 +188,11 @@ RabbitMQ UI 15672
 Prometheus  9090
 Grafana     3000
 ```
+
+浏览器打开 `http://127.0.0.1:<API_HOST_PORT>/` 就能看到内置的最小控制台
+（注册登录、上传视频、翻关注 Feed 与热榜、进详情页播放/点赞/评论/关注）。
+它由 API 同源提供（`internal/web`，用 `go:embed` 打进二进制），
+用来人工验证整条链路是否正常，见 [docs/11](docs/11-minimal-console.md)。
 
 如果宿主机端口已被占用，可以临时覆盖：
 
@@ -300,3 +306,4 @@ go build ./cmd/...
 - [阶段 8：交付、Docker Compose 与 CI](docs/08-delivery-and-ci.md)
 - [阶段 9：热门 Feed、滑动窗口热榜与防击穿](docs/09-hot-ranking.md)
 - [阶段 10：压测与性能调优](docs/10-load-testing.md)
+- [阶段 11：最小前端控制台（人工验证）](docs/11-minimal-console.md)

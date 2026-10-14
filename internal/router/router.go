@@ -13,6 +13,7 @@ import (
 	"go-feed-system/internal/middleware"
 	"go-feed-system/internal/user"
 	"go-feed-system/internal/video"
+	"go-feed-system/internal/web"
 )
 
 type Dependencies struct {
@@ -77,6 +78,14 @@ func New(deps Dependencies) *gin.Engine {
 	// 基础设施探针不放进 /api/v1，避免业务版本升级影响运维配置。
 	engine.GET("/livez", deps.HealthHandler.Live)
 	engine.GET("/readyz", deps.HealthHandler.Ready)
+
+	// 最小前端：单文件内嵌页面，与 API 同源，所以不需要配 CORS。
+	// 生产环境通常交给 nginx / CDN，这里是为了开箱即用、方便人工验证。
+	engine.GET("/", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Data(http.StatusOK, "text/html; charset=utf-8", web.IndexHTML())
+	})
+
 	if deps.MetricsHandler != nil {
 		engine.GET("/metrics", gin.WrapH(deps.MetricsHandler))
 	}

@@ -71,7 +71,7 @@ func newTestEvent() *Event {
 		EventID:     uuid.NewString(),
 		EventType:   EventTypeVideoPublished,
 		AggregateID: 1001,
-		Payload:     []byte(`{"video_id":1001,"author_id":10,"published_at":"2026-10-04T12:00:00+08:00"}`),
+		Payload:     `{"video_id":1001,"author_id":10,"published_at":"2026-10-04T12:00:00+08:00"}`,
 		Status:      StatusPending,
 	}
 }

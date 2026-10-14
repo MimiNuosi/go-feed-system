@@ -262,6 +262,9 @@ MySQL/RabbitMQ/Grafana 还在启动抢 I/O，同一台宿主上又刚跑过别�
 A1  MYSQL_DSN 加 interpolateParams=true
     参数在客户端转义，一条查询只发一次 COM_QUERY，省掉 PREPARE 往返。
     前提是 DSN 必须指定 charset，否则多字节字符集的转义不安全。
+    注意它还会改变参数的编码方式：[]byte 会被写成 _binary'...' 字面量，
+    往 JSON 列里写会直接报 3144（阶段 11 在 outbox 的 payload 上踩过，
+    修法是把该字段改成 string）。写路径也要进压测，否则这类问题测不出来。
 A2  详情路径去掉多余的"视频是否存在"校验
     GetLikeState 是详情页专用入口，调用方已经加载过视频；
     把它拆成 GetState（保留 404 语义，给将来的调用方用）

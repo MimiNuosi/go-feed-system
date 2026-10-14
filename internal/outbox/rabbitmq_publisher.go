@@ -37,7 +37,7 @@ func (p *RabbitMQPublisher) Publish(ctx context.Context, event Event) error {
 	message := rabbitmq.Message{
 		MessageID: event.EventID,
 		Type:      event.EventType,
-		Body:      event.Payload,
+		Body:      []byte(event.Payload),
 		Timestamp: event.CreatedAt,
 	}
 

@@ -706,6 +706,31 @@ func TestNew_IgnoresForwardedFor(t *testing.T) {
 }
 
 // alwaysDenyLimiter 模拟额度已经用光。
+// TestNew_ServesEmbeddedConsole 验证内嵌的最小前端能从根路径打开。
+func TestNew_ServesEmbeddedConsole(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	engine := New(Dependencies{
+		Logger:        logger,
+		HealthHandler: health.NewHandler("test", logger),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("expected an HTML content type, got %q", ct)
+	}
+	if !strings.Contains(w.Body.String(), "Feed 流控制台") {
+		t.Fatal("expected the embedded console page")
+	}
+}
+
 type alwaysDenyLimiter struct {
 	calls int
 }

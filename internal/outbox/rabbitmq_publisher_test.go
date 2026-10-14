@@ -40,7 +40,7 @@ func TestRabbitMQPublisher_PublishMapsEvent(t *testing.T) {
 		EventID:     "event-100",
 		EventType:   EventTypeVideoPublished,
 		AggregateID: 200,
-		Payload:     []byte(`{"video_id":200,"author_id":10}`),
+		Payload:     `{"video_id":200,"author_id":10}`,
 		Status:      StatusPending,
 		RetryCount:  3,
 		LastError:   "previous failure",
@@ -67,7 +67,7 @@ func TestRabbitMQPublisher_PublishMapsEvent(t *testing.T) {
 	if got.Type != event.EventType {
 		t.Errorf("expected type %q, got %q", event.EventType, got.Type)
 	}
-	if !bytes.Equal(got.Body, event.Payload) {
+	if !bytes.Equal(got.Body, []byte(event.Payload)) {
 		t.Errorf("expected body %s, got %s", event.Payload, got.Body)
 	}
 	if !got.Timestamp.Equal(event.CreatedAt) {
@@ -86,7 +86,7 @@ func TestRabbitMQPublisher_PropagatesPublishError(t *testing.T) {
 	err := adapter.Publish(context.Background(), Event{
 		EventID:   "event-1",
 		EventType: EventTypeVideoPublished,
-		Payload:   []byte(`{"video_id":1}`),
+		Payload:   `{"video_id":1}`,
 		CreatedAt: time.Now(),
 	})
 	if !errors.Is(err, errMessagePublish) {
@@ -103,7 +103,7 @@ func TestRabbitMQPublisher_NilPublisher(t *testing.T) {
 	err := adapter.Publish(context.Background(), Event{
 		EventID:   "event-1",
 		EventType: EventTypeVideoPublished,
-		Payload:   []byte(`{"video_id":1}`),
+		Payload:   `{"video_id":1}`,
 		CreatedAt: time.Now(),
 	})
 	if err == nil {

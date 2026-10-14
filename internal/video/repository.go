@@ -61,7 +61,10 @@ func (r *GORMRepository) CreateWithOutbox(
 		if err != nil {
 			return fmt.Errorf("marshal video published event: %w", err)
 		}
-		event.Payload = payloadBytes
+		// 注意：这里转成 string 是有意的。
+		// DSN 开了 interpolateParams 时，[]byte 会被驱动转义成 _binary'...'，
+		// MySQL 无法用它写入 JSON 列（见 outbox.Event.Payload 的注释）。
+		event.Payload = string(payloadBytes)
 
 		if err := r.outboxWriter.CreateWithTx(ctx, tx, event); err != nil {
 			return fmt.Errorf("create outbox event in transaction: %w", err)

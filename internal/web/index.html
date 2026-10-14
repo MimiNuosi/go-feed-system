@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Feed 流控制台</title>
+<style>
+  :root {
+    --bg: #f6f7f6;
+    --surface: #ffffff;
+    --border: #dde2df;
+    --text: #1b2421;
+    --muted: #5c6863;
+    --accent: #0f766e;
+    --accent-weak: #e5f1ef;
+    --danger: #b42318;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  main { max-width: 960px; margin: 0 auto; padding: 20px; }
+  section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  h2 { font-size: 14px; margin: 0 0 12px; font-weight: 600; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  input, textarea, select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--border);
+    border-radius: 6px; background: #fff; color: inherit; font: inherit;
+  }
+  input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent-weak); border-color: var(--accent); }
+  .row { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  button {
+    padding: 8px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); font: inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: #0b5d57; }
+  button.ghost { border-color: transparent; color: var(--muted); }
+  button[disabled] { opacity: .5; cursor: default; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .tabs button.active { background: var(--accent-weak); border-color: var(--accent); color: #0b5d57; }
+  ul.items { list-style: none; margin: 0; padding: 0; }
+  ul.items li { border-top: 1px solid var(--border); padding: 12px 0; display: flex; justify-content: space-between; gap: 16px; }
+  ul.items li:first-child { border-top: none; }
+  .title { font-weight: 600; }
+  .meta { color: var(--muted); font-size: 12px; }
+  .video-box { max-width: 100%; }
+  video { width: 100%; max-height: 420px; background: #000; border-radius: 6px; }
+  .comments { list-style: none; padding: 0; margin: 12px 0; }
+  .comments li { border-top: 1px solid var(--border); padding: 8px 0; display: flex; justify-content: space-between; gap: 12px; }
+  #toast {
+    position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column;
+    gap: 8px; max-width: 420px; z-index: 10;
+  }
+  #toast div {
+    background: #1b2421; color: #fff; padding: 10px 12px; border-radius: 6px;
+    font-size: 13px; word-break: break-word;
+  }
+  #toast div.err { background: var(--danger); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Feed 流控制台</h1>
+  <div id="session" class="meta"></div>
+</header>
+
+<main>
+  <section id="auth-panel">
+    <div class="row">
+      <div>
+        <h2>登录</h2>
+        <label for="login-email">邮箱</label>
+        <input id="login-email" type="email" autocomplete="username">
+        <label for="login-password" style="margin-top:8px">密码</label>
+        <input id="login-password" type="password" autocomplete="current-password">
+        <div class="actions"><button class="primary" id="do-login">登录</button></div>
+      </div>
+      <div>
+        <h2>注册</h2>
+        <label for="reg-username">用户名</label>
+        <input id="reg-username">
+        <label for="reg-email" style="margin-top:8px">邮箱</label>
+        <input id="reg-email" type="email">
+        <label for="reg-password" style="margin-top:8px">密码</label>
+        <input id="reg-password" type="password" autocomplete="new-password">
+        <div class="actions"><button id="do-register">注册</button></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="upload-panel" hidden>
+    <h2>上传视频</h2>
+    <div class="row">
+      <div>
+        <label for="up-title">标题</label>
+        <input id="up-title" maxlength="100">
+        <label for="up-desc" style="margin-top:8px">描述</label>
+        <textarea id="up-desc" rows="3" maxlength="1000"></textarea>
+      </div>
+      <div>
+        <label for="up-file">文件（mp4 / mov / m4v / webm / 3gp）</label>
+        <input id="up-file" type="file" accept="video/*">
+      </div>
+    </div>
+    <div class="actions"><button class="primary" id="do-upload">上传</button></div>
+  </section>
+
+  <nav class="tabs" id="tabs" hidden>
+    <button data-tab="following" class="active">关注 Feed</button>
+    <button data-tab="hot">热榜</button>
+  </nav>
+
+  <section id="feed-panel" hidden>
+    <div class="row">
+      <div>
+        <label for="hot-window" id="window-label" hidden>时间窗口</label>
+        <select id="hot-window" hidden>
+          <option value="1h">最近 1 小时</option>
+          <option value="24h">最近 24 小时</option>
+        </select>
+      </div>
+    </div>
+    <ul class="items" id="item-list"></ul>
+    <div class="actions">
+      <button id="load-more">加载更多</button>
+    </div>
+  </section>
+
+  <section id="detail-panel" hidden>
+    <div class="actions" style="margin:0 0 12px">
+      <button class="ghost" id="back">← 返回列表</button>
+      <button id="do-follow">关注作者</button>
+      <button id="do-like">点赞</button>
+      <button id="do-view">记录一次浏览</button>
+    </div>
+    <video id="player" controls preload="metadata"></video>
+    <div id="detail-meta" class="meta" style="margin-top:8px"></div>
+    <h2 style="margin-top:16px">评论</h2>
+    <ul class="comments" id="comment-list"></ul>
+    <div class="row">
+      <div>
+        <label for="comment-input">发表评论</label>
+        <input id="comment-input" maxlength="500">
+      </div>
+    </div>
+    <div class="actions"><button class="primary" id="do-comment">发表</button></div>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var state = {
+    token: localStorage.getItem('feed_token') || '',
+    user: null,
+    tab: 'following',
+    following: { cursor: '', hasMore: true },
+    hot: { window: '1h', cursor: '', hasMore: true },
+    detail: null
+  };
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function toast(message, isError) {
+    var box = document.createElement('div');
+    box.className = isError ? 'err' : '';
+    box.textContent = message;
+    $('toast').appendChild(box);
+    setTimeout(function () { box.remove(); }, isError ? 8000 : 4000);
+  }
+
+  // 统一封装：自动带 token、统一解析错误码、401 时清登录态
+  function api(path, options) {
+    options = options || {};
+    var headers = {};
+    if (state.token) { headers.Authorization = 'Bearer ' + state.token; }
+
+    var body;
+    if (options.form) {
+      body = options.form;
+    } else if (options.body !== undefined) {
+      headers['Content-Type'] = 'application/json';
+      body = JSON.stringify(options.body);
+    }
+
+    return fetch('/api/v1' + path, {
+      method: options.method || 'GET',
+      headers: headers,
+      body: body
+    }).then(function (res) {
+      if (res.status === 401) {
+        setToken('');
+        throw new Error('登录状态已失效，请重新登录');
+      }
+      return res.text().then(function (text) {
+        var data = null;
+        if (text) { try { data = JSON.parse(text); } catch (e) { data = null; } }
+        if (!res.ok) {
+          var err = data && data.error ? data.error : {};
+          var message = (err.code || res.status) + ' ' + (err.message || 'request failed');
+          if (err.request_id) { message += '（request_id=' + err.request_id + '）'; }
+          throw new Error(message);
+        }
+        return data;
+      });
+    });
+  }
+
+  function setToken(token) {
+    state.token = token || '';
+    if (state.token) { localStorage.setItem('feed_token', state.token); }
+    else { localStorage.removeItem('feed_token'); }
+    renderSession();
+  }
+
+  function renderSession() {
+    var box = $('session');
+    box.textContent = '';
+    if (!state.token) {
+      $('auth-panel').hidden = false;
+      $('upload-panel').hidden = true;
+      $('tabs').hidden = true;
+      $('feed-panel').hidden = true;
+      $('detail-panel').hidden = true;
+      return;
+    }
+    $('auth-panel').hidden = true;
+    $('upload-panel').hidden = false;
+    $('tabs').hidden = false;
+
+    var name = state.user ? state.user.username : '已登录';
+    var text = document.createElement('span');
+    text.textContent = name + '　';
+    var out = document.createElement('button');
+    out.className = 'ghost';
+    out.textContent = '退出';
+    out.onclick = function () { setToken(''); state.user = null; renderSession(); };
+    box.appendChild(text);
+    box.appendChild(out);
+    showTab(state.tab);
+  }
+
+  function showTab(tab) {
+    state.tab = tab;
+    Array.prototype.forEach.call($('tabs').children, function (btn) {
+      btn.className = btn.dataset.tab === tab ? 'active' : '';
+    });
+    var isHot = tab === 'hot';
+    $('feed-panel').hidden = false;
+    $('detail-panel').hidden = true;
+    $('hot-window').hidden = !isHot;
+    $('window-label').hidden = !isHot;
+    loadFirstPage();
+  }
+
+  function loadFirstPage() {
+    if (state.tab === 'hot') {
+      state.hot.cursor = '';
+      state.hot.hasMore = true;
+    } else {
+      state.following.cursor = '';
+      state.following.hasMore = true;
+    }
+    $('item-list').textContent = '';
+    loadMore();
+  }
+
+  function loadMore() {
+    var isHot = state.tab === 'hot';
+    var cursor = isHot ? state.hot.cursor : state.following.cursor;
+    var path = isHot
+      ? '/feed/hot?window=' + state.hot.window + '&page_size=5'
+      : '/feed/following?page_size=5';
+    if (cursor) { path += '&cursor=' + encodeURIComponent(cursor); }
+
+    return api(path).then(function (page) {
+      renderItems(page.items || []);
+      if (isHot) {
+        state.hot.cursor = page.next_cursor || '';
+        state.hot.hasMore = !!page.has_more;
+      } else {
+        state.following.cursor = page.next_cursor || '';
+        state.following.hasMore = !!page.has_more;
+      }
+      $('load-more').disabled = !(isHot ? state.hot.hasMore : state.following.hasMore);
+      if (!(isHot ? state.hot.hasMore : state.following.hasMore)) {
+        $('load-more').textContent = '没有更多了';
+      } else {
+        $('load-more').textContent = '加载更多';
+      }
+    }).catch(function (err) { toast(err.message, true); });
+  }
+
+  function renderItems(items) {
+    var list = $('item-list');
+    if (!items.length && !list.children.length) {
+      var empty = document.createElement('li');
+      empty.className = 'meta';
+      empty.textContent = '暂无数据';
+      list.appendChild(empty);
+      return;
+    }
+    items.forEach(function (item) {
+      var li = document.createElement('li');
+
+      var left = document.createElement('div');
+      var title = document.createElement('div');
+      title.className = 'title';
+      title.textContent = item.title || ('视频 #' + item.id);
+      var meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = '@' + (item.author ? item.author.username : '?')
+        + '　播放 ' + item.view_count + '　点赞 ' + item.like_count
+        + (item.is_liked_by ? '（已赞）' : '');
+      left.appendChild(title);
+      left.appendChild(meta);
+
+      var open = document.createElement('button');
+      open.textContent = '打开';
+      open.onclick = function () { openDetail(item.id); };
+
+      li.appendChild(left);
+      li.appendChild(open);
+      list.appendChild(li);
+    });
+  }
+
+  function openDetail(videoID) {
+    $('feed-panel').hidden = true;
+    $('detail-panel').hidden = false;
+    $('comment-list').textContent = '';
+
+    api('/videos/' + videoID).then(function (video) {
+      state.detail = video;
+      $('player').src = '/api/v1/videos/' + videoID + '/file';
+      renderDetail();
+      return api('/videos/' + videoID + '/comments?page_size=20');
+    }).then(function (page) {
+      renderComments(page.items || []);
+    }).catch(function (err) { toast(err.message, true); });
+  }
+
+  function renderDetail() {
+    var v = state.detail;
+    if (!v) { return; }
+    $('detail-meta').textContent = '#' + v.id + '　' + v.title
+      + '　@' + (v.author ? v.author.username : '?')
+      + '　播放 ' + v.view_count + '　点赞 ' + v.like_count
+      + '　类型 ' + v.content_type + '　' + v.size_bytes + ' 字节';
+    $('do-like').textContent = v.is_liked_by ? '取消点赞' : '点赞';
+  }
+
+  function renderComments(items) {
+    var list = $('comment-list');
+    list.textContent = '';
+    if (!items.length) {
+      var empty = document.createElement('li');
+      empty.className = 'meta';
+      empty.textContent = '还没有评论';
+      list.appendChild(empty);
+      return;
+    }
+    items.forEach(function (comment) {
+      var li = document.createElement('li');
+      var left = document.createElement('div');
+      var who = document.createElement('div');
+      who.className = 'meta';
+      who.textContent = 'user ' + comment.user_id;
+      var text = document.createElement('div');
+      text.textContent = comment.content;
+      left.appendChild(who);
+      left.appendChild(text);
+
+      var del = document.createElement('button');
+      del.className = 'ghost';
+      del.textContent = '删除';
+      del.onclick = function () {
+        api('/comments/' + comment.id, { method: 'DELETE' })
+          .then(function () { openDetail(state.detail.id); })
+          .catch(function (err) { toast(err.message, true); });
+      };
+
+      li.appendChild(left);
+      li.appendChild(del);
+      list.appendChild(li);
+    });
+  }
+
+  function withErrorDisplay(promise) {
+    return promise.catch(function (err) { toast(err.message, true); });
+  }
+
+  $('do-login').onclick = function () {
+    withErrorDisplay(api('/auth/login', {
+      method: 'POST',
+      body: { email: $('login-email').value.trim(), password: $('login-password').value }
+    }).then(function (res) {
+      setToken(res.access_token);
+      return loadMe();
+    }).then(function () { toast('登录成功'); showTab('following'); }));
+  };
+
+  $('do-register').onclick = function () {
+    withErrorDisplay(api('/auth/register', {
+      method: 'POST',
+      body: {
+        username: $('reg-username').value.trim(),
+        email: $('reg-email').value.trim(),
+        password: $('reg-password').value
+      }
+    }).then(function (res) {
+      toast('注册成功，用户 ID ' + res.user.id);
+      $('login-email').value = res.user.email;
+      $('login-password').value = $('reg-password').value;
+    }));
+  };
+
+  $('do-upload').onclick = function () {
+    var file = $('up-file').files[0];
+    if (!file) { toast('请选择视频文件', true); return; }
+    var form = new FormData();
+    form.append('title', $('up-title').value.trim());
+    form.append('description', $('up-desc').value);
+    form.append('file', file);
+
+    withErrorDisplay(api('/videos', { method: 'POST', form: form }).then(function (video) {
+      toast('上传成功，视频 ID ' + video.id);
+      openDetail(video.id);
+    }));
+  };
+
+  $('load-more').onclick = function () { withErrorDisplay(loadMore()); };
+
+  $('hot-window').onchange = function () {
+    state.hot.window = $('hot-window').value;
+    loadFirstPage();
+  };
+
+  $('back').onclick = function () {
+    $('player').removeAttribute('src');
+    $('player').load();
+    $('detail-panel').hidden = true;
+    $('feed-panel').hidden = false;
+  };
+
+  $('do-view').onclick = function () {
+    var id = state.detail && state.detail.id;
+    if (!id) { return; }
+    withErrorDisplay(api('/videos/' + id + '/view', { method: 'POST' }).then(function () {
+      toast('已记录浏览（去热榜看看它有没有上来）');
+    }));
+  };
+
+  $('do-like').onclick = function () {
+    var v = state.detail;
+    if (!v) { return; }
+    var method = v.is_liked_by ? 'DELETE' : 'POST';
+    withErrorDisplay(api('/videos/' + v.id + '/like', { method: method }).then(function () {
+      return api('/videos/' + v.id);
+    }).then(function (fresh) {
+      state.detail = fresh;
+      renderDetail();
+      toast(fresh.is_liked_by ? '已点赞' : '已取消点赞');
+    }));
+  };
+
+  $('do-follow').onclick = function () {
+    var v = state.detail;
+    if (!v || !v.author) { return; }
+    withErrorDisplay(api('/users/' + v.author.id + '/follow', { method: 'POST' }).then(function () {
+      toast('已关注 @' + v.author.username + '（去关注 Feed 看看他的视频）');
+    }));
+  };
+
+  $('do-comment').onclick = function () {
+    var v = state.detail;
+    var content = $('comment-input').value.trim();
+    if (!v || !content) { return; }
+    withErrorDisplay(api('/videos/' + v.id + '/comments', {
+      method: 'POST',
+      body: { content: content }
+    }).then(function () {
+      $('comment-input').value = '';
+      return api('/videos/' + v.id + '/comments?page_size=20');
+    }).then(function (page) { renderComments(page.items || []); }));
+  };
+
+  Array.prototype.forEach.call($('tabs').children, function (btn) {
+    btn.onclick = function () { showTab(btn.dataset.tab); };
+  });
+
+  function loadMe() {
+    return api('/users/me').then(function (me) { state.user = me; renderSession(); });
+  }
+
+  if (state.token) {
+    loadMe().catch(function () { setToken(''); renderSession(); });
+  } else {
+    renderSession();
+  }
+})();
+</script>
+</body>
+</html>
