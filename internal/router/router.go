@@ -103,6 +103,12 @@ func New(deps Dependencies) *gin.Engine {
 	v1.POST("/auth/register", deps.UserHandler.Register)
 	v1.POST("/auth/login", deps.UserHandler.Login)
 	v1.GET("/videos/:id/comments", deps.CommentHandler.List)
+	v1.GET(
+		"/users/:id/videos",
+		deps.OptionalAuthMiddleware,
+		identityRateLimit,
+		deps.VideoHandler.ListByAuthor,
+	)
 	v1.POST(
 		"/videos/:id/view",
 		deps.OptionalAuthMiddleware,

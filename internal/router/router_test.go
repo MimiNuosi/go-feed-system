@@ -48,6 +48,21 @@ func (f *fakeLikeRouteService) GetLikeState(ctx context.Context, viewerID, video
 	return 7, false, nil
 }
 
+func (f *fakeLikeRouteService) CountByVideoIDs(
+	ctx context.Context,
+	videoIDs []uint64,
+) (map[uint64]int64, error) {
+	return map[uint64]int64{}, nil
+}
+
+func (f *fakeLikeRouteService) LikedVideoIDsByUser(
+	ctx context.Context,
+	userID uint64,
+	videoIDs []uint64,
+) (map[uint64]bool, error) {
+	return map[uint64]bool{}, nil
+}
+
 type fakeVideoRouteService struct{}
 
 func (f *fakeVideoRouteService) Upload(ctx context.Context, input video.UploadInput) (*video.Video, error) {
@@ -60,6 +75,21 @@ func (f *fakeVideoRouteService) GetByID(ctx context.Context, id uint64) (*video.
 
 func (f *fakeVideoRouteService) GetDetail(ctx context.Context, id uint64) (*video.VideoDetail, error) {
 	return &video.VideoDetail{ID: id, Title: "test video"}, nil
+}
+
+func (f *fakeVideoRouteService) GetAuthorInfo(ctx context.Context, userID uint64) (video.AuthorInfo, error) {
+	return video.AuthorInfo{ID: userID, Username: "author"}, nil
+}
+
+func (f *fakeVideoRouteService) ListByAuthor(
+	ctx context.Context,
+	authorID uint64,
+	cursor string,
+	pageSize int,
+) (*video.AuthorVideoPage, error) {
+	return &video.AuthorVideoPage{
+		Videos: []video.Video{{ID: 7, AuthorID: authorID, Title: "my video"}},
+	}, nil
 }
 
 func (f *fakeVideoRouteService) OpenFile(ctx context.Context, id uint64) (io.ReadSeekCloser, *video.Video, error) {
@@ -707,6 +737,31 @@ func TestNew_IgnoresForwardedFor(t *testing.T) {
 
 // alwaysDenyLimiter 模拟额度已经用光。
 // TestNew_ServesEmbeddedConsole 验证内嵌的最小前端能从根路径打开。
+// TestRouter_ListVideosByAuthor 验证 /users/:id/videos 这条路由确实挂上了。
+func TestRouter_ListVideosByAuthor(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	videoSvc := &fakeVideoRouteService{}
+	engine := New(Dependencies{
+		Logger:                 logger,
+		HealthHandler:          health.NewHandler("test", logger),
+		OptionalAuthMiddleware: func(c *gin.Context) { c.Next() },
+		VideoHandler:           video.NewHandler(videoSvc, &fakeLikeRouteService{}),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users/7/videos", nil)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "my video") {
+		t.Fatalf("expected the author's video in the body, got %s", w.Body.String())
+	}
+}
+
 func TestNew_ServesEmbeddedConsole(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

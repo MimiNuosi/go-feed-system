@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -219,6 +220,74 @@ func TestGORMRepository_ViewCountRoundTrip(t *testing.T) {
 	// 非正增量是非法输入
 	if err := repository.AddViewCount(ctx, item.ID, 0); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput for zero delta, got %v", err)
+	}
+}
+
+// TestGORMRepository_ListByAuthor 覆盖"按作者列视频"的游标分页与隔离性。
+func TestGORMRepository_ListByAuthor(t *testing.T) {
+	tx := openTestDB(t)
+	author := createTestAuthor(t, tx)
+	other := createTestAuthor(t, tx)
+	repository := NewGORMRepository(tx, outbox.NewGORMRepository(tx))
+	ctx := context.Background()
+
+	created := make([]uint64, 0, 3)
+	for i := 0; i < 3; i++ {
+		item := newOutboxTestVideo(author.ID)
+		item.Title = fmt.Sprintf("video-%d", i)
+		if err := repository.Create(ctx, item); err != nil {
+			t.Fatalf("create video %d: %v", i, err)
+		}
+		created = append(created, item.ID)
+	}
+
+	// 别人的视频不能被列出来
+	foreign := newOutboxTestVideo(other.ID)
+	if err := repository.Create(ctx, foreign); err != nil {
+		t.Fatalf("create foreign video: %v", err)
+	}
+
+	// 第一页：id 倒序，最新在前
+	page1, err := repository.ListByAuthor(ctx, author.ID, 0, 2)
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if len(page1) != 2 {
+		t.Fatalf("expected 2 videos, got %d", len(page1))
+	}
+	if page1[0].ID != created[2] || page1[1].ID != created[1] {
+		t.Fatalf("expected newest first (%v, %v), got %v", created[2], created[1], page1)
+	}
+	for _, item := range page1 {
+		if item.AuthorID != author.ID {
+			t.Fatalf("listed a video from another author: %+v", item)
+		}
+	}
+
+	// 第二页：用上一页最后一条的 id 当游标
+	page2, err := repository.ListByAuthor(ctx, author.ID, page1[1].ID, 2)
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	if len(page2) != 1 || page2[0].ID != created[0] {
+		t.Fatalf("expected the remaining video %d, got %v", created[0], page2)
+	}
+
+	// 第三页：没有更多了
+	page3, err := repository.ListByAuthor(ctx, author.ID, page2[0].ID, 2)
+	if err != nil {
+		t.Fatalf("third page: %v", err)
+	}
+	if len(page3) != 0 {
+		t.Fatalf("expected an empty third page, got %v", page3)
+	}
+
+	// 参数校验
+	if _, err := repository.ListByAuthor(ctx, 0, 0, 2); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for author ID 0, got %v", err)
+	}
+	if _, err := repository.ListByAuthor(ctx, author.ID, 0, 0); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for limit 0, got %v", err)
 	}
 }
 

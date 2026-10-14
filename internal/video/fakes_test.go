@@ -10,9 +10,16 @@ import (
 )
 
 type fakeVideoService struct {
-	UploadFunc    func(ctx context.Context, input UploadInput) (*Video, error)
-	GetDetailFunc func(ctx context.Context, id uint64) (*VideoDetail, error)
-	OpenFileFunc  func(ctx context.Context, id uint64) (io.ReadSeekCloser, *Video, error)
+	UploadFunc        func(ctx context.Context, input UploadInput) (*Video, error)
+	GetDetailFunc     func(ctx context.Context, id uint64) (*VideoDetail, error)
+	OpenFileFunc      func(ctx context.Context, id uint64) (io.ReadSeekCloser, *Video, error)
+	GetAuthorInfoFunc func(ctx context.Context, userID uint64) (AuthorInfo, error)
+	ListByAuthorFunc  func(
+		ctx context.Context,
+		authorID uint64,
+		cursor string,
+		pageSize int,
+	) (*AuthorVideoPage, error)
 }
 
 func (f *fakeVideoService) Upload(ctx context.Context, input UploadInput) (*Video, error) {
@@ -40,10 +47,35 @@ func (f *fakeVideoService) OpenFile(ctx context.Context, id uint64) (io.ReadSeek
 	return nil, nil, ErrNotFound
 }
 
+func (f *fakeVideoService) GetAuthorInfo(ctx context.Context, userID uint64) (AuthorInfo, error) {
+	if f.GetAuthorInfoFunc != nil {
+		return f.GetAuthorInfoFunc(ctx, userID)
+	}
+	return AuthorInfo{ID: userID, Username: "test-user"}, nil
+}
+
+func (f *fakeVideoService) ListByAuthor(
+	ctx context.Context,
+	authorID uint64,
+	cursor string,
+	pageSize int,
+) (*AuthorVideoPage, error) {
+	if f.ListByAuthorFunc != nil {
+		return f.ListByAuthorFunc(ctx, authorID, cursor, pageSize)
+	}
+	return &AuthorVideoPage{Videos: []Video{}}, nil
+}
+
 type fakeVideoRepository struct {
 	CreateFunc           func(ctx context.Context, video *Video) error
 	CreateWithOutboxFunc func(ctx context.Context, video *Video, event *outbox.Event) error
 	FindByIDFunc         func(ctx context.Context, id uint64) (*Video, error)
+	ListByAuthorFunc     func(
+		ctx context.Context,
+		authorID uint64,
+		beforeID uint64,
+		limit int,
+	) ([]Video, error)
 }
 
 func (f *fakeVideoRepository) Create(ctx context.Context, video *Video) error {
@@ -68,6 +100,18 @@ func (f *fakeVideoRepository) FindByID(ctx context.Context, id uint64) (*Video, 
 		return f.FindByIDFunc(ctx, id)
 	}
 	return nil, ErrNotFound
+}
+
+func (f *fakeVideoRepository) ListByAuthor(
+	ctx context.Context,
+	authorID uint64,
+	beforeID uint64,
+	limit int,
+) ([]Video, error) {
+	if f.ListByAuthorFunc != nil {
+		return f.ListByAuthorFunc(ctx, authorID, beforeID, limit)
+	}
+	return []Video{}, nil
 }
 
 type fakeObjectStorage struct {

@@ -38,6 +38,141 @@ func ftypHeader(major string, compatible ...string) []byte {
 	return header
 }
 
+func TestService_ListByAuthor(t *testing.T) {
+	errRepo := errors.New("repository failed")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	tests := []struct {
+		name         string
+		cursor       string
+		pageSize     int
+		repoVideos   []Video
+		repoErr      error
+		wantErr      error
+		wantLen      int
+		wantHasMore  bool
+		wantNext     string
+		wantBeforeID uint64
+		wantLimit    int
+	}{
+		{
+			name:       "第一页不带游标时从最新开始",
+			pageSize:   2,
+			repoVideos: []Video{{ID: 9}, {ID: 8}},
+			wantLen:    2,
+			wantLimit:  3, // pageSize + 1，多取一条判断还有没有下一页
+		},
+		{
+			name:         "第二页把游标转成 beforeID",
+			cursor:       "42",
+			pageSize:     2,
+			repoVideos:   []Video{{ID: 41}},
+			wantLen:      1,
+			wantBeforeID: 42,
+			wantLimit:    3,
+		},
+		{
+			name:        "多返回一条说明还有下一页",
+			pageSize:    2,
+			repoVideos:  []Video{{ID: 9}, {ID: 8}, {ID: 7}},
+			wantLen:     2,
+			wantHasMore: true,
+			wantNext:    "8",
+			wantLimit:   3,
+		},
+		{
+			name:       "刚好取满说明是最后一页",
+			pageSize:   2,
+			repoVideos: []Video{{ID: 9}, {ID: 8}},
+			wantLen:    2,
+			wantLimit:  3,
+		},
+		{
+			name:     "游标不是数字",
+			cursor:   "abc",
+			pageSize: 2,
+			wantErr:  ErrInvalidInput,
+		},
+		{
+			name:     "游标为 0 视为非法",
+			cursor:   "0",
+			pageSize: 2,
+			wantErr:  ErrInvalidInput,
+		},
+		{
+			name:      "页大小为空用默认值",
+			pageSize:  0,
+			wantLimit: DefaultAuthorVideoPageSize + 1,
+		},
+		{
+			name:      "页大小超过上限被裁剪",
+			pageSize:  1000,
+			wantLimit: MaxAuthorVideoPageSize + 1,
+		},
+		{
+			name:     "仓储错误原样透传",
+			pageSize: 2,
+			repoErr:  errRepo,
+			wantErr:  errRepo,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var (
+				gotBeforeID uint64
+				gotLimit    int
+				called      bool
+			)
+			repo := &fakeVideoRepository{
+				ListByAuthorFunc: func(
+					ctx context.Context,
+					authorID uint64,
+					beforeID uint64,
+					limit int,
+				) ([]Video, error) {
+					called = true
+					gotBeforeID = beforeID
+					gotLimit = limit
+					return tt.repoVideos, tt.repoErr
+				},
+			}
+			svc := NewService(repo, &fakeObjectStorage{}, &fakeUserReader{}, logger)
+
+			page, err := svc.ListByAuthor(context.Background(), 7, tt.cursor, tt.pageSize)
+
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("expected error %v, got %v", tt.wantErr, err)
+				}
+				if tt.cursor != "" && tt.cursor != "0" && called {
+					t.Fatal("游标非法时不该查仓储")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("list by author: %v", err)
+			}
+
+			if len(page.Videos) != tt.wantLen {
+				t.Errorf("expected %d videos, got %d", tt.wantLen, len(page.Videos))
+			}
+			if page.HasMore != tt.wantHasMore {
+				t.Errorf("expected HasMore %v, got %v", tt.wantHasMore, page.HasMore)
+			}
+			if page.NextCursor != tt.wantNext {
+				t.Errorf("expected NextCursor %q, got %q", tt.wantNext, page.NextCursor)
+			}
+			if gotBeforeID != tt.wantBeforeID {
+				t.Errorf("expected beforeID %d, got %d", tt.wantBeforeID, gotBeforeID)
+			}
+			if gotLimit != tt.wantLimit {
+				t.Errorf("expected limit %d, got %d", tt.wantLimit, gotLimit)
+			}
+		})
+	}
+}
+
 func TestService_Upload(t *testing.T) {
 	mp4Content := append(ftypHeader("isom", "iso2", "avc1", "mp41"), []byte("payload")...)
 	movContent := append(ftypHeader("qt  ", "qt  "), []byte("payload")...)

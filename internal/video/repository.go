@@ -15,6 +15,12 @@ type Repository interface {
 	Create(ctx context.Context, video *Video) error
 	CreateWithOutbox(ctx context.Context, video *Video, event *outbox.Event) error
 	FindByID(ctx context.Context, id uint64) (*Video, error)
+	ListByAuthor(
+		ctx context.Context,
+		authorID uint64,
+		beforeID uint64,
+		limit int,
+	) ([]Video, error)
 }
 
 type GORMRepository struct {
@@ -113,6 +119,44 @@ func (r *GORMRepository) ListReadyByIDs(
 		Find(&videos).Error
 	if err != nil {
 		return nil, fmt.Errorf("list ready videos by ids: %w", err)
+	}
+	if videos == nil {
+		return []Video{}, nil
+	}
+	return videos, nil
+}
+
+// ListByAuthor 按作者列出视频，id 倒序（即"最新发布在前"）。
+//
+// beforeID 是游标：传 0 表示第一页；否则只取 id 小于它的记录。
+//
+// 这里不需要复合游标（对比关注 Feed 的 (created_at, id)）：
+// 这条列表的排序键就是主键本身，id 单调递增，不存在"同一时间戳"的并列问题。
+// 什么时候该用复合游标？排序键不唯一的时候 —— 比如按发布时间排序，
+// 同一毫秒可能有多条记录。
+func (r *GORMRepository) ListByAuthor(
+	ctx context.Context,
+	authorID uint64,
+	beforeID uint64,
+	limit int,
+) ([]Video, error) {
+	if authorID == 0 {
+		return nil, fmt.Errorf("list videos by author: author ID is zero: %w", ErrInvalidInput)
+	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("list videos by author: limit is not positive: %w", ErrInvalidInput)
+	}
+
+	query := r.db.WithContext(ctx).
+		Where("author_id = ?", authorID).
+		Where("status = ?", StatusReady)
+	if beforeID > 0 {
+		query = query.Where("id < ?", beforeID)
+	}
+
+	var videos []Video
+	if err := query.Order("id DESC").Limit(limit).Find(&videos).Error; err != nil {
+		return nil, fmt.Errorf("list videos by author: %w", err)
 	}
 	if videos == nil {
 		return []Video{}, nil

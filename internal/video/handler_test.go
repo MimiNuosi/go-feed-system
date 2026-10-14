@@ -18,10 +18,20 @@ import (
 
 // Fake LikeStateReader
 type fakeLikeStateReader struct {
-	GetLikeStateFunc func(ctx context.Context, viewerID, videoID uint64) (int64, bool, error)
-	CallCount        int
-	LastViewerID     uint64
-	LastVideoID      uint64
+	GetLikeStateFunc    func(ctx context.Context, viewerID, videoID uint64) (int64, bool, error)
+	CountByVideoIDsFunc func(
+		ctx context.Context,
+		videoIDs []uint64,
+	) (map[uint64]int64, error)
+	LikedVideoIDsByUserFunc func(
+		ctx context.Context,
+		userID uint64,
+		videoIDs []uint64,
+	) (map[uint64]bool, error)
+	CallCount    int
+	LastViewerID uint64
+	LastVideoID  uint64
+	LastCountIDs []uint64
 }
 
 func (f *fakeLikeStateReader) GetLikeState(ctx context.Context, viewerID, videoID uint64) (int64, bool, error) {
@@ -32,6 +42,29 @@ func (f *fakeLikeStateReader) GetLikeState(ctx context.Context, viewerID, videoI
 		return f.GetLikeStateFunc(ctx, viewerID, videoID)
 	}
 	return 0, false, nil
+}
+
+func (f *fakeLikeStateReader) CountByVideoIDs(
+	ctx context.Context,
+	videoIDs []uint64,
+) (map[uint64]int64, error) {
+	f.LastCountIDs = videoIDs
+	if f.CountByVideoIDsFunc != nil {
+		return f.CountByVideoIDsFunc(ctx, videoIDs)
+	}
+	return map[uint64]int64{}, nil
+}
+
+func (f *fakeLikeStateReader) LikedVideoIDsByUser(
+	ctx context.Context,
+	userID uint64,
+	videoIDs []uint64,
+) (map[uint64]bool, error) {
+	f.LastViewerID = userID
+	if f.LikedVideoIDsByUserFunc != nil {
+		return f.LikedVideoIDsByUserFunc(ctx, userID, videoIDs)
+	}
+	return map[uint64]bool{}, nil
 }
 
 // 辅助函数：构造 multipart 请求体
@@ -167,6 +200,200 @@ func TestHandler_Upload(t *testing.T) {
 			// 断言状态码
 			if w.Code != tt.wantStatusCode {
 				t.Errorf("expected status %d, got %d. Body: %s", tt.wantStatusCode, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandler_ListByAuthor(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	errLike := errors.New("like store failed")
+
+	tests := []struct {
+		name          string
+		path          string
+		withViewer    bool
+		authorErr     error
+		listErr       error
+		listPage      *AuthorVideoPage
+		likeErr       error
+		likeCounts    map[uint64]int64
+		likedMap      map[uint64]bool
+		wantStatus    int
+		wantItems     int
+		wantLikeCount int64
+		wantIsLiked   bool
+		wantNext      string
+		wantHasMore   bool
+		wantLikedCall bool
+	}{
+		{
+			name: "第一页正常返回且带分页信息",
+			path: "/api/v1/users/7/videos?page_size=2",
+			listPage: &AuthorVideoPage{
+				Videos:     []Video{{ID: 9, Title: "v9"}, {ID: 8, Title: "v8"}},
+				NextCursor: "8",
+				HasMore:    true,
+			},
+			likeCounts:    map[uint64]int64{9: 5},
+			wantStatus:    http.StatusOK,
+			wantItems:     2,
+			wantLikeCount: 5,
+			wantNext:      "8",
+			wantHasMore:   true,
+		},
+		{
+			name:          "登录用户附带自己的点赞状态",
+			path:          "/api/v1/users/7/videos",
+			withViewer:    true,
+			listPage:      &AuthorVideoPage{Videos: []Video{{ID: 9, Title: "v9"}}},
+			likedMap:      map[uint64]bool{9: true},
+			wantStatus:    http.StatusOK,
+			wantItems:     1,
+			wantIsLiked:   true,
+			wantLikedCall: true,
+		},
+		{
+			name:       "没有作品时返回空列表",
+			path:       "/api/v1/users/7/videos",
+			listPage:   &AuthorVideoPage{Videos: []Video{}},
+			wantStatus: http.StatusOK,
+			wantItems:  0,
+		},
+		{
+			name:       "作者不存在返回 404",
+			path:       "/api/v1/users/7/videos",
+			authorErr:  ErrNotFound,
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "用户 ID 非法返回 400",
+			path:       "/api/v1/users/abc/videos",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "page_size 非法返回 400",
+			path:       "/api/v1/users/7/videos?page_size=abc",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "游标非法返回 400",
+			path:       "/api/v1/users/7/videos?cursor=oops",
+			listErr:    ErrInvalidInput,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "点赞查询失败返回 500",
+			path:       "/api/v1/users/7/videos",
+			listPage:   &AuthorVideoPage{Videos: []Video{{ID: 9}}},
+			likeErr:    errLike,
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeSvc := &fakeVideoService{
+				GetAuthorInfoFunc: func(ctx context.Context, userID uint64) (AuthorInfo, error) {
+					if tt.authorErr != nil {
+						return AuthorInfo{}, tt.authorErr
+					}
+					return AuthorInfo{ID: userID, Username: "author"}, nil
+				},
+				ListByAuthorFunc: func(
+					ctx context.Context,
+					authorID uint64,
+					cursor string,
+					pageSize int,
+				) (*AuthorVideoPage, error) {
+					if tt.listErr != nil {
+						return nil, tt.listErr
+					}
+					return tt.listPage, nil
+				},
+			}
+			likedCalled := false
+			fakeLike := &fakeLikeStateReader{
+				CountByVideoIDsFunc: func(
+					ctx context.Context,
+					videoIDs []uint64,
+				) (map[uint64]int64, error) {
+					if tt.likeErr != nil {
+						return nil, tt.likeErr
+					}
+					return tt.likeCounts, nil
+				},
+				LikedVideoIDsByUserFunc: func(
+					ctx context.Context,
+					userID uint64,
+					videoIDs []uint64,
+				) (map[uint64]bool, error) {
+					likedCalled = true
+					return tt.likedMap, nil
+				},
+			}
+
+			handler := NewHandler(fakeSvc, fakeLike)
+			engine := gin.New()
+			engine.GET("/api/v1/users/:id/videos", func(c *gin.Context) {
+				if tt.withViewer {
+					ctx := authctx.WithUserID(c.Request.Context(), 1001)
+					c.Request = c.Request.WithContext(ctx)
+				}
+				handler.ListByAuthor(c)
+			})
+
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			w := httptest.NewRecorder()
+			engine.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("expected %d, got %d body=%s", tt.wantStatus, w.Code, w.Body.String())
+			}
+			if tt.wantStatus != http.StatusOK {
+				return
+			}
+
+			var body struct {
+				Items []struct {
+					ID        uint64 `json:"id"`
+					LikeCount int64  `json:"like_count"`
+					IsLikedBy bool   `json:"is_liked_by"`
+					Author    struct {
+						Username string `json:"username"`
+					} `json:"author"`
+				} `json:"items"`
+				NextCursor string `json:"next_cursor"`
+				HasMore    bool   `json:"has_more"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+
+			if len(body.Items) != tt.wantItems {
+				t.Fatalf("expected %d items, got %d", tt.wantItems, len(body.Items))
+			}
+			if body.NextCursor != tt.wantNext {
+				t.Errorf("expected next_cursor %q, got %q", tt.wantNext, body.NextCursor)
+			}
+			if body.HasMore != tt.wantHasMore {
+				t.Errorf("expected has_more %v, got %v", tt.wantHasMore, body.HasMore)
+			}
+			if tt.wantItems > 0 {
+				first := body.Items[0]
+				if first.Author.Username != "author" {
+					t.Errorf("expected author username, got %q", first.Author.Username)
+				}
+				if first.LikeCount != tt.wantLikeCount {
+					t.Errorf("expected like_count %d, got %d", tt.wantLikeCount, first.LikeCount)
+				}
+				if first.IsLikedBy != tt.wantIsLiked {
+					t.Errorf("expected is_liked_by %v, got %v", tt.wantIsLiked, first.IsLikedBy)
+				}
+			}
+			if likedCalled != tt.wantLikedCall {
+				t.Errorf("expected liked lookup called %v, got %v", tt.wantLikedCall, likedCalled)
 			}
 		})
 	}

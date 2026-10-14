@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"mime"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -234,6 +235,88 @@ func (s *Service) GetByID(ctx context.Context, id uint64) (*Video, error) {
 }
 
 // 组合视频和作者信息
+// GetAuthorInfo 返回作者摘要，供"按作者列视频"组装 DTO 使用。
+func (s *Service) GetAuthorInfo(ctx context.Context, userID uint64) (AuthorInfo, error) {
+	if userID == 0 {
+		return AuthorInfo{}, ErrInvalidInput
+	}
+
+	author, err := s.userReader.GetByID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, user.ErrNotFound) {
+			return AuthorInfo{}, ErrNotFound
+		}
+		return AuthorInfo{}, fmt.Errorf("get author info: %w", err)
+	}
+
+	return AuthorInfo{ID: author.ID, Username: author.Username}, nil
+}
+
+// ListByAuthor 按作者列出一页视频，最新发布在前。
+//
+// cursor 是上一页返回的 NextCursor（即上一页最后一条的 video ID），
+// 空字符串表示第一页。
+func (s *Service) ListByAuthor(
+	ctx context.Context,
+	authorID uint64,
+	cursor string,
+	pageSize int,
+) (*AuthorVideoPage, error) {
+	if authorID == 0 {
+		return nil, fmt.Errorf("list videos by author: author ID is zero: %w", ErrInvalidInput)
+	}
+
+	beforeID, err := parseAuthorVideoCursor(cursor)
+	if err != nil {
+		return nil, fmt.Errorf("list videos by author: %w", err)
+	}
+
+	if pageSize <= 0 {
+		pageSize = DefaultAuthorVideoPageSize
+	}
+	if pageSize > MaxAuthorVideoPageSize {
+		pageSize = MaxAuthorVideoPageSize
+	}
+
+	// 多取一条用来判断还有没有下一页
+	videos, err := s.videos.ListByAuthor(ctx, authorID, beforeID, pageSize+1)
+	if err != nil {
+		return nil, fmt.Errorf("list videos by author: %w", err)
+	}
+
+	page := &AuthorVideoPage{Videos: videos}
+	if len(videos) <= pageSize {
+		return page, nil
+	}
+
+	page.HasMore = true
+	page.Videos = videos[:pageSize]
+	page.NextCursor = formatAuthorVideoCursor(page.Videos[len(page.Videos)-1].ID)
+	return page, nil
+}
+
+// parseAuthorVideoCursor 解析游标。
+//
+// 游标就是上一页最后一条的 video ID —— 因为这条列表按主键倒序，
+// 主键本身就能唯一定位下一页的起点，不需要复合游标。
+// 客户端可控的输入一律当不可信数据：解析失败按 invalid input 拒绝。
+func parseAuthorVideoCursor(raw string) (uint64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+
+	id, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || id == 0 {
+		return 0, ErrInvalidInput
+	}
+	return id, nil
+}
+
+func formatAuthorVideoCursor(videoID uint64) string {
+	return strconv.FormatUint(videoID, 10)
+}
+
 func (s *Service) GetDetail(ctx context.Context, id uint64) (*VideoDetail, error) {
 	item, err := s.videos.FindByID(ctx, id)
 	if err != nil {

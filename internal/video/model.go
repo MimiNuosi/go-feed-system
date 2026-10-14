@@ -4,6 +4,11 @@ import "time"
 
 const (
 	StatusReady = "ready"
+
+	// DefaultAuthorVideoPageSize 是"按作者列视频"的默认页大小。
+	DefaultAuthorVideoPageSize = 20
+	// MaxAuthorVideoPageSize 是同一接口允许的最大页大小。
+	MaxAuthorVideoPageSize = 100
 )
 
 // Video 对应 MySQL 中的 videos 表，只保存元数据，不保存视频二进制。
@@ -44,4 +49,13 @@ type VideoDetail struct {
 	Status      string     `json:"status"`
 	LikeCount   int64      `json:"like_count"`
 	IsLikedBy   bool       `json:"is_liked_by"`
+}
+
+// AuthorVideoPage 是"按作者列视频"的一页结果。
+//
+// 它的顺序是 id 倒序，也就是"最新发布在前"。
+type AuthorVideoPage struct {
+	Videos     []Video
+	NextCursor string
+	HasMore    bool
 }

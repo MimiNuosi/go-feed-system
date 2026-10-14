@@ -126,6 +126,7 @@
   <nav class="tabs" id="tabs" hidden>
     <button data-tab="following" class="active">关注 Feed</button>
     <button data-tab="hot">热榜</button>
+    <button data-tab="mine">我的视频</button>
   </nav>
 
   <section id="feed-panel" hidden>
@@ -177,6 +178,7 @@
     tab: 'following',
     following: { cursor: '', hasMore: true },
     hot: { window: '1h', cursor: '', hasMore: true },
+    mine: { cursor: '', hasMore: true },
     detail: null
   };
 
@@ -275,40 +277,31 @@
   }
 
   function loadFirstPage() {
-    if (state.tab === 'hot') {
-      state.hot.cursor = '';
-      state.hot.hasMore = true;
-    } else {
-      state.following.cursor = '';
-      state.following.hasMore = true;
-    }
+    var box = state[state.tab];
+    box.cursor = '';
+    box.hasMore = true;
     $('item-list').textContent = '';
     loadMore();
   }
 
   function loadMore() {
-    var isHot = state.tab === 'hot';
-    var cursor = isHot ? state.hot.cursor : state.following.cursor;
-    var path = isHot
-      ? '/feed/hot?window=' + state.hot.window + '&page_size=5'
-      : '/feed/following?page_size=5';
-    if (cursor) { path += '&cursor=' + encodeURIComponent(cursor); }
+    var box = state[state.tab];
+    var path;
+    if (state.tab === 'hot') {
+      path = '/feed/hot?window=' + box.window + '&page_size=5';
+    } else if (state.tab === 'mine') {
+      path = '/users/' + (state.user ? state.user.id : 0) + '/videos?page_size=5';
+    } else {
+      path = '/feed/following?page_size=5';
+    }
+    if (box.cursor) { path += '&cursor=' + encodeURIComponent(box.cursor); }
 
     return api(path).then(function (page) {
       renderItems(page.items || []);
-      if (isHot) {
-        state.hot.cursor = page.next_cursor || '';
-        state.hot.hasMore = !!page.has_more;
-      } else {
-        state.following.cursor = page.next_cursor || '';
-        state.following.hasMore = !!page.has_more;
-      }
-      $('load-more').disabled = !(isHot ? state.hot.hasMore : state.following.hasMore);
-      if (!(isHot ? state.hot.hasMore : state.following.hasMore)) {
-        $('load-more').textContent = '没有更多了';
-      } else {
-        $('load-more').textContent = '加载更多';
-      }
+      box.cursor = page.next_cursor || '';
+      box.hasMore = !!page.has_more;
+      $('load-more').disabled = !box.hasMore;
+      $('load-more').textContent = box.hasMore ? '加载更多' : '没有更多了';
     }).catch(function (err) { toast(err.message, true); });
   }
 
