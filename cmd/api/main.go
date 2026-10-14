@@ -197,6 +197,9 @@ func run() error {
 		userService,
 		likeService,
 		logger,
+		// 热榜读模型的 TTL：把"每页 3 条 SQL 补作者和点赞"从每请求降到每秒一次，
+		// 代价是点赞数最多陈旧 1 秒（详情接口不走这个缓存）。
+		hot.DefaultItemCacheTTL,
 	)
 
 	// 限流：额度放在进程内存里（理由见 pkg/ratelimit 的包注释），

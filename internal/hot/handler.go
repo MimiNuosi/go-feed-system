@@ -65,6 +65,12 @@ type Handler struct {
 	users             UserReader
 	likes             LikeReader
 	logger            *slog.Logger
+
+	// itemCache 缓存热榜页里与访问者无关的部分（视频、作者、点赞数）。
+	itemCache *itemCache
+
+	// now 允许测试注入假时钟，生产环境就是 time.Now。
+	now func() time.Time
 }
 
 func NewHandler(
@@ -74,6 +80,7 @@ func NewHandler(
 	users UserReader,
 	likes LikeReader,
 	logger *slog.Logger,
+	itemCacheTTL time.Duration,
 ) *Handler {
 	if logger == nil {
 		logger = slog.Default()
@@ -85,6 +92,8 @@ func NewHandler(
 		users:             users,
 		likes:             likes,
 		logger:            logger,
+		itemCache:         newItemCache(itemCacheTTL),
+		now:               time.Now,
 	}
 }
 
@@ -242,6 +251,49 @@ func (h *Handler) buildHotPage(
 		videoIDs = append(videoIDs, item.VideoID)
 	}
 
+	// 1. 与访问者无关的部分走短 TTL 缓存：
+	//    视频元数据 + 作者名 + 点赞数。命中时这一页一条 SQL 都不发。
+	now := h.now()
+	items, ok := h.itemCache.Get(videoIDs, now)
+	if !ok {
+		var err error
+		items, err = h.loadItemsForPage(ctx, ranked)
+		if err != nil {
+			return nil, err
+		}
+		h.itemCache.Set(videoIDs, items, now)
+	}
+
+	// 2. is_liked_by 与访问者有关，永远实时查。
+	//    注意必须改在 Get 返回的副本上，否则会把上一个访问者的点赞状态
+	//    带进缓存给所有人看。
+	if userID, ok := authctx.UserID(ctx); ok && userID > 0 {
+		likedMap, err := h.likes.LikedVideoIDsByUser(ctx, userID, videoIDs)
+		if err != nil {
+			return nil, fmt.Errorf("list hot feed: get liked status: %w", err)
+		}
+		for i := range items {
+			items[i].IsLikedBy = likedMap[items[i].ID]
+		}
+	}
+
+	result.Items = items
+	return result, nil
+}
+
+// loadItemsForPage 用 3 条 SQL 补齐一页热榜的视频元数据、作者名与点赞数。
+//
+// 返回的条目里 IsLikedBy 一律为 false —— 它属于访问者维度，
+// 由调用方按请求填充，因此这份结果可以跨用户共享和缓存。
+func (h *Handler) loadItemsForPage(
+	ctx context.Context,
+	ranked []RankedVideo,
+) ([]feedmodel.Item, error) {
+	videoIDs := make([]uint64, 0, len(ranked))
+	for _, item := range ranked {
+		videoIDs = append(videoIDs, item.VideoID)
+	}
+
 	videos, err := h.videos.ListReadyByIDs(ctx, videoIDs)
 	if err != nil {
 		return nil, fmt.Errorf("list hot feed: list videos: %w", err)
@@ -269,14 +321,7 @@ func (h *Handler) buildHotPage(
 		return nil, fmt.Errorf("list hot feed: count likes: %w", err)
 	}
 
-	likedMap := map[uint64]bool{}
-	if userID, ok := authctx.UserID(ctx); ok && userID > 0 {
-		likedMap, err = h.likes.LikedVideoIDsByUser(ctx, userID, videoIDs)
-		if err != nil {
-			return nil, fmt.Errorf("list hot feed: get liked status: %w", err)
-		}
-	}
-
+	items := make([]feedmodel.Item, 0, len(ranked))
 	for _, rankedVideo := range ranked {
 		videoItem, ok := videoMap[rankedVideo.VideoID]
 		if !ok {
@@ -287,8 +332,7 @@ func (h *Handler) buildHotPage(
 		if author, ok := userMap[videoItem.AuthorID]; ok && author != nil {
 			username = author.Username
 		}
-
-		result.Items = append(result.Items, feedmodel.Item{
+		items = append(items, feedmodel.Item{
 			ID: videoItem.ID,
 			Author: feedmodel.AuthorInfo{
 				ID:       videoItem.AuthorID,
@@ -300,9 +344,8 @@ func (h *Handler) buildHotPage(
 			CreatedAt:   videoItem.CreatedAt,
 			ViewCount:   videoItem.ViewCount,
 			LikeCount:   likeCountMap[videoItem.ID],
-			IsLikedBy:   likedMap[videoItem.ID],
 		})
 	}
 
-	return result, nil
+	return items, nil
 }

@@ -218,6 +218,7 @@ func newTestEngine(
 			hotService,
 			hotService,
 			logger,
+			0, // 这组用例走完整路径，不开读模型缓存
 		),
 	})
 }
@@ -288,6 +289,7 @@ func TestHotViewRoute(t *testing.T) {
 				hotService,
 				hotService,
 				logger,
+				0,
 			),
 			AuthMiddleware:         func(c *gin.Context) { c.Next() },
 			OptionalAuthMiddleware: func(c *gin.Context) { c.Next() },
@@ -326,6 +328,7 @@ func TestHotViewRoute(t *testing.T) {
 				hotService,
 				hotService,
 				logger,
+				0,
 			),
 			AuthMiddleware:         func(c *gin.Context) { c.Next() },
 			OptionalAuthMiddleware: optionalAuth,
@@ -376,6 +379,7 @@ func TestHotFeedRoute(t *testing.T) {
 			hotService,
 			hotService,
 			logger,
+			0,
 		),
 		AuthMiddleware:         func(c *gin.Context) { c.Next() },
 		OptionalAuthMiddleware: func(c *gin.Context) { c.Next() },

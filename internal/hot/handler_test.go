@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +41,12 @@ type fakeRecordViewService struct {
 	userMap    map[uint64]*user.User
 	likeCounts map[uint64]int64
 	likedMap   map[uint64]bool
+
+	// 读模型缓存相关的调用计数
+	videoCalls     int
+	userCalls      int
+	likeCountCalls int
+	likedCalls     int
 }
 
 func (f *fakeRecordViewService) RecordView(
@@ -81,6 +88,7 @@ func (f *fakeRecordViewService) ListReadyByIDs(
 	ctx context.Context,
 	ids []uint64,
 ) ([]video.Video, error) {
+	f.videoCalls++
 	return f.videosByID, nil
 }
 
@@ -88,6 +96,7 @@ func (f *fakeRecordViewService) GetByIDs(
 	ctx context.Context,
 	ids []uint64,
 ) (map[uint64]*user.User, error) {
+	f.userCalls++
 	return f.userMap, nil
 }
 
@@ -95,6 +104,7 @@ func (f *fakeRecordViewService) CountByVideoIDs(
 	ctx context.Context,
 	videoIDs []uint64,
 ) (map[uint64]int64, error) {
+	f.likeCountCalls++
 	return f.likeCounts, nil
 }
 
@@ -103,6 +113,7 @@ func (f *fakeRecordViewService) LikedVideoIDsByUser(
 	userID uint64,
 	videoIDs []uint64,
 ) (map[uint64]bool, error) {
+	f.likedCalls++
 	return f.likedMap, nil
 }
 
@@ -187,6 +198,7 @@ func TestHandler_RecordView(t *testing.T) {
 				service,
 				service,
 				slog.New(slog.NewTextHandler(io.Discard, nil)),
+				0, // 关闭读模型缓存：这一组用例关心的是每个请求的完整路径
 			)
 
 			engine := gin.New()
@@ -232,6 +244,152 @@ func TestHandler_RecordView(t *testing.T) {
 				t.Fatal("viewer key must not expose raw client IP")
 			}
 		})
+	}
+}
+
+// TestHandler_ListHot_ItemCache 验证读模型缓存：
+// 命中时不再查视频/作者/点赞，TTL 过期后重新查。
+func TestHandler_ListHot_ItemCache(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	clock := &fakeClock{now: time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)}
+	service := newHotPageFakeService()
+	handler := NewHandler(
+		service, service, service, service, service,
+		discardLogger(), time.Second,
+	)
+	handler.now = clock.Now
+
+	engine := gin.New()
+	engine.GET("/api/v1/feed/hot", handler.ListHot)
+
+	call := func() string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/feed/hot?window=1h", nil)
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+		return w.Body.String()
+	}
+
+	first := call()
+	if service.videoCalls != 1 || service.userCalls != 1 || service.likeCountCalls != 1 {
+		t.Fatalf(
+			"第一次请求应该各查一次：video=%d user=%d like_count=%d",
+			service.videoCalls,
+			service.userCalls,
+			service.likeCountCalls,
+		)
+	}
+
+	second := call()
+	if service.videoCalls != 1 || service.userCalls != 1 || service.likeCountCalls != 1 {
+		t.Fatalf(
+			"缓存命中后不该再查数据库：video=%d user=%d like_count=%d",
+			service.videoCalls,
+			service.userCalls,
+			service.likeCountCalls,
+		)
+	}
+	if second != first {
+		t.Fatalf("缓存命中后的响应应该完全一致：\nfirst =%s\nsecond=%s", first, second)
+	}
+
+	clock.Set(clock.Now().Add(2 * time.Second))
+	call()
+	if service.videoCalls != 2 {
+		t.Fatalf("TTL 过期后应该重新查，video 调用次数 = %d", service.videoCalls)
+	}
+}
+
+// TestHandler_ListHot_IsLikedByIsNotSharedBetweenViewers 卡住这个缓存最容易写错的地方：
+// 缓存条目里绝不包含 is_liked_by，否则会把上一个访问者的点赞状态发给所有人。
+func TestHandler_ListHot_IsLikedByIsNotSharedBetweenViewers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	clock := &fakeClock{now: time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)}
+	service := newHotPageFakeService()
+	service.likedMap = map[uint64]bool{3: true}
+
+	handler := NewHandler(
+		service, service, service, service, service,
+		discardLogger(), time.Second,
+	)
+	handler.now = clock.Now
+
+	engine := gin.New()
+	engine.GET("/api/v1/feed/hot", handler.ListHot)
+
+	callAs := func(userID uint64) bool {
+		t.Helper()
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/feed/hot?window=1h", nil)
+		if userID > 0 {
+			ctx := authctx.WithUserID(req.Context(), userID)
+			req = req.WithContext(ctx)
+		}
+
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+
+		var body struct {
+			Items []struct {
+				IsLikedBy bool `json:"is_liked_by"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if len(body.Items) != 1 {
+			t.Fatalf("expected 1 item, got %d", len(body.Items))
+		}
+		return body.Items[0].IsLikedBy
+	}
+
+	// 1) 匿名访问写入缓存，且不该查"我是否点过赞"
+	if isLiked := callAs(0); isLiked {
+		t.Fatal("匿名请求的 is_liked_by 必须为 false")
+	}
+	if service.likedCalls != 0 {
+		t.Fatalf("匿名请求不该查询点赞状态，实际调用 %d 次", service.likedCalls)
+	}
+
+	// 2) 登录用户命中同一条缓存，但点赞状态必须实时查
+	if isLiked := callAs(7); !isLiked {
+		t.Fatal("登录用户应该看到 is_liked_by=true")
+	}
+	if service.likedCalls != 1 {
+		t.Fatalf("登录用户应该查一次点赞状态，实际 %d 次", service.likedCalls)
+	}
+	if service.videoCalls != 1 {
+		t.Fatalf("命中缓存不该重查视频，实际 %d 次", service.videoCalls)
+	}
+
+	// 3) 再匿名：缓存不能被上一个访问者的点赞状态污染
+	if isLiked := callAs(0); isLiked {
+		t.Fatal("缓存被污染：匿名请求看到了别人的点赞状态")
+	}
+}
+
+// newHotPageFakeService 返回一个"热榜页有 1 条数据"的假依赖。
+func newHotPageFakeService() *fakeRecordViewService {
+	return &fakeRecordViewService{
+		listVideos: []RankedVideo{{VideoID: 3, Score: 5}},
+		videosByID: []video.Video{{
+			ID:          3,
+			AuthorID:    10,
+			Title:       "hot video",
+			Description: "desc",
+			ContentType: "video/mp4",
+			Status:      video.StatusReady,
+		}},
+		userMap:    map[uint64]*user.User{10: {ID: 10, Username: "author"}},
+		likeCounts: map[uint64]int64{3: 7},
 	}
 }
 
@@ -360,6 +518,7 @@ func TestHandler_ListHot(t *testing.T) {
 				service,
 				service,
 				slog.New(slog.NewTextHandler(io.Discard, nil)),
+				0, // 这组用例走完整路径，不开读模型缓存
 			)
 
 			engine := gin.New()
