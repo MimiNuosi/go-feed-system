@@ -7,6 +7,12 @@ import (
 	"gorm.io/gorm"
 )
 
+// statusReady 与 video.StatusReady 取值一致。
+//
+// feed 包在生产代码里不依赖 video 包（只有测试用），所以这里单独声明一次：
+// 只有可播放的视频才该出现在 Feed 里。
+const statusReady = "ready"
+
 // Repository 定义 Feed 读模型需要的查询能力。
 //
 // Feed 是跨领域读模型，可以在 Repository 中 JOIN follows 和 videos；
@@ -24,6 +30,8 @@ type Repository interface {
 		cursor *Cursor,
 		limit int,
 	) ([]VideoRecord, error)
+	// ListLatest 查询全站最新视频（不依赖关注关系）。
+	ListLatest(ctx context.Context, cursor *Cursor, limit int) ([]VideoRecord, error)
 }
 
 type GORMRepository struct {
@@ -62,6 +70,38 @@ func (r *GORMRepository) ListFollowing(
 	var records []VideoRecord
 	if err := query.Find(&records).Error; err != nil {
 		return nil, fmt.Errorf("list following feed: %w", err)
+	}
+
+	return records, nil
+}
+
+// ListLatest 查询全站最新视频，最新在前。
+//
+// 和 ListFollowing 的区别只有一个：不 JOIN 关注表。
+// 所以它不需要登录，是陌生人发现新内容的入口。
+// 排序与游标和关注 Feed 保持一致，用 (created_at, id) 复合游标 ——
+// 同一毫秒可能发布多条视频，只用时间戳定位会把它们漏掉或算重。
+func (r *GORMRepository) ListLatest(
+	ctx context.Context,
+	cursor *Cursor,
+	limit int,
+) ([]VideoRecord, error) {
+	query := r.db.WithContext(ctx).
+		Table("videos AS v").
+		Select("v.id, v.author_id, v.title, v.description, v.content_type, v.view_count, v.created_at").
+		Where("v.status = ?", statusReady)
+
+	if cursor != nil {
+		query = query.Where("(v.created_at, v.id) < (?, ?)", cursor.CreatedAt, cursor.ID)
+	}
+
+	var records []VideoRecord
+	err := query.
+		Order("v.created_at DESC, v.id DESC").
+		Limit(limit).
+		Find(&records).Error
+	if err != nil {
+		return nil, fmt.Errorf("list latest feed: %w", err)
 	}
 
 	return records, nil

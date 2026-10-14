@@ -121,6 +121,13 @@ func New(deps Dependencies) *gin.Engine {
 		identityRateLimit,
 		deps.HotHandler.ListHot,
 	)
+	// 最新：不需要关注关系，是陌生人发现新内容的入口
+	v1.GET(
+		"/feed/latest",
+		deps.OptionalAuthMiddleware,
+		identityRateLimit,
+		deps.FeedHandler.ListLatest,
+	)
 
 	// 2. 需要鉴权的接口组
 	auth := v1.Group("")

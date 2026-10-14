@@ -80,17 +80,7 @@ func (s *Service) ListFollowing(
 	}
 
 	// 2. 处理 pageSize 默认值和最大值
-	if pageSize <= 0 {
-		pageSize = DefaultPageSize
-	}
-	if pageSize > MaxPageSize {
-		pageSize = MaxPageSize
-	}
-
-	logger := s.logger
-	if logger == nil {
-		logger = slog.Default()
-	}
+	pageSize = normalizePageSize(pageSize)
 
 	// 3. 按读侧分流策略加载候选记录。
 	records, err := s.loadCandidateRecords(ctx, userID, cursor, pageSize+1)
@@ -98,13 +88,60 @@ func (s *Service) ListFollowing(
 		return nil, fmt.Errorf("list following: load candidates: %w", err)
 	}
 
-	// 4. 判断 HasMore 并裁剪
+	return s.assemblePage(ctx, userID, records, pageSize, "list following")
+}
+
+// ListLatest 返回全站最新的视频流，不需要关注关系。
+//
+// 它是新内容的冷启动流量入口：刚发布的视频既没有热度也没人关注，
+// 只有在"最新"里才能被别人看到，进而被关注。
+//
+// viewerID 为 0 表示匿名访问，此时不查询"我是否点过赞"。
+func (s *Service) ListLatest(
+	ctx context.Context,
+	viewerID uint64,
+	cursor *Cursor,
+	pageSize int,
+) (*Page, error) {
+	pageSize = normalizePageSize(pageSize)
+
+	records, err := s.videos.ListLatest(ctx, cursor, pageSize+1)
+	if err != nil {
+		return nil, fmt.Errorf("list latest: load candidates: %w", err)
+	}
+
+	return s.assemblePage(ctx, viewerID, records, pageSize, "list latest")
+}
+
+// normalizePageSize 兜住 pageSize 的默认值与上限。
+func normalizePageSize(pageSize int) int {
+	if pageSize <= 0 {
+		return DefaultPageSize
+	}
+	if pageSize > MaxPageSize {
+		return MaxPageSize
+	}
+	return pageSize
+}
+
+// assemblePage 把候选记录裁剪成页，批量补齐作者与互动信息，并生成下一页游标。
+//
+// viewerID 为 0 表示匿名：跳过"我是否点过赞"这一次查询，IsLikedBy 恒为 false。
+// op 只用于错误信息，方便定位是哪个入口出的问题。
+func (s *Service) assemblePage(
+	ctx context.Context,
+	viewerID uint64,
+	records []VideoRecord,
+	pageSize int,
+	op string,
+) (*Page, error) {
+	// 1. 判断 HasMore 并裁剪
 	hasMore := len(records) > pageSize
 	if hasMore {
 		records = records[:pageSize]
 	}
 
-	// 5. 空 Feed 直接返回，避免不必要的批量查询
+	// 2. 空 Feed 直接返回，避免不必要的批量查询
 	if len(records) == 0 {
 		return &Page{
 			Items:      []Item{},
@@ -113,7 +150,7 @@ func (s *Service) ListFollowing(
 		}, nil
 	}
 
-	// 6. 收集去重后的作者 ID 和视频 ID
+	// 3. 收集去重后的作者 ID 和视频 ID
 	authorIDSet := make(map[uint64]struct{})
 	videoIDSet := make(map[uint64]struct{})
 	for _, r := range records {
@@ -131,23 +168,26 @@ func (s *Service) ListFollowing(
 		videoIDs = append(videoIDs, id)
 	}
 
-	// 7. 批量查询：作者信息、点赞总数、当前用户点赞状态
+	// 4. 批量查询：作者信息、点赞总数、当前用户点赞状态
 	userMap, err := s.users.GetByIDs(ctx, authorIDs)
 	if err != nil {
-		return nil, fmt.Errorf("list following: batch get authors: %w", err)
+		return nil, fmt.Errorf("%s: batch get authors: %w", op, err)
 	}
 
 	likeCountMap, err := s.likes.CountByVideoIDs(ctx, videoIDs)
 	if err != nil {
-		return nil, fmt.Errorf("list following: batch count likes: %w", err)
+		return nil, fmt.Errorf("%s: batch count likes: %w", op, err)
 	}
 
-	likedMap, err := s.likes.LikedVideoIDsByUser(ctx, userID, videoIDs)
-	if err != nil {
-		return nil, fmt.Errorf("list following: batch get liked status: %w", err)
+	likedMap := map[uint64]bool{}
+	if viewerID > 0 {
+		likedMap, err = s.likes.LikedVideoIDsByUser(ctx, viewerID, videoIDs)
+		if err != nil {
+			return nil, fmt.Errorf("%s: batch get liked status: %w", op, err)
+		}
 	}
 
-	// 8. 按记录顺序组装 Item（绝对不能遍历 map，否则顺序会乱）
+	// 5. 按记录顺序组装 Item（绝对不能遍历 map，否则顺序会乱）
 	items := make([]Item, 0, len(records))
 	for _, r := range records {
 		// 作者兜底
@@ -184,7 +224,7 @@ func (s *Service) ListFollowing(
 		})
 	}
 
-	// 9. 生成 NextCursor
+	// 6. 生成 NextCursor
 	nextCursor := ""
 	if hasMore {
 		last := records[len(records)-1]
@@ -193,7 +233,7 @@ func (s *Service) ListFollowing(
 			ID:        last.ID,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("list following: encode cursor: %w", err)
+			return nil, fmt.Errorf("%s: encode cursor: %w", op, err)
 		}
 	}
 

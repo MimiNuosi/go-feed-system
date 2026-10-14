@@ -142,6 +142,120 @@ func createBigAuthorSeedData(
 	return viewer.ID, bigAuthor.ID, smallAuthor.ID, bigNew.ID, bigOld.ID, small.ID
 }
 
+// TestGORMRepository_ListLatest 验证"最新"频道：不依赖关注关系。
+//
+// 种子里 userA 只关注了 userB，但 userC 的视频也应该出现在最新里 ——
+// 这正是"陌生人发现新内容"的场景（也是 666 能不能看到 333 的关键）。
+func TestGORMRepository_ListLatest(t *testing.T) {
+	tx := openTestDB(t)
+	_, userB, userC, video1, video2, video3 := createFeedSeedData(t, tx)
+	repository := NewGORMRepository(tx)
+	ctx := context.Background()
+
+	records, err := repository.ListLatest(ctx, nil, 10)
+	if err != nil {
+		t.Fatalf("list latest: %v", err)
+	}
+
+	// 注意："最新"是全站的，库里本来就有别的视频（真实数据、其它用例留下的），
+	// 所以这里只检查种子视频之间的相对顺序，不能假设结果里只有它们。
+	seedIDs := map[uint64]bool{video1: true, video2: true, video3: true}
+	seedOrder := make([]uint64, 0, 3)
+	authorSet := make(map[uint64]bool)
+	for _, r := range records {
+		if seedIDs[r.ID] {
+			seedOrder = append(seedOrder, r.ID)
+			authorSet[r.AuthorID] = true
+		}
+	}
+
+	// v3 最新；v1 与 v2 时间戳相同，靠 id 兜住顺序（id 大的在前）
+	want := []uint64{video3, video2, video1}
+	if len(seedOrder) != len(want) {
+		t.Fatalf("expected %d seed videos, got %v", len(want), seedOrder)
+	}
+	for i := range want {
+		if seedOrder[i] != want[i] {
+			t.Fatalf("expected seed order %v, got %v", want, seedOrder)
+		}
+	}
+
+	// 跨作者：关注关系不影响最新
+	if !authorSet[userB] || !authorSet[userC] {
+		t.Fatalf("expected videos from both authors, got %v", authorSet)
+	}
+
+	// 逐条翻页：同时间戳的两条不能被漏掉或重复
+	var walked []uint64
+	var cursor *Cursor
+	for i := 0; i < 50; i++ {
+		page, err := repository.ListLatest(ctx, cursor, 1)
+		if err != nil {
+			t.Fatalf("walk page %d: %v", i, err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		if seedIDs[page[0].ID] {
+			walked = append(walked, page[0].ID)
+		}
+		cursor = &Cursor{CreatedAt: page[0].CreatedAt, ID: page[0].ID}
+	}
+	if len(walked) != 3 || walked[0] != video3 || walked[1] != video2 || walked[2] != video1 {
+		t.Fatalf("expected the same order when paging one by one, got %v", walked)
+	}
+
+	// 走到底之后没有更多
+	empty, err := repository.ListLatest(ctx, cursor, 1)
+	if err != nil {
+		t.Fatalf("list after the end: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected no more records, got %v", empty)
+	}
+}
+
+// TestGORMRepository_ListLatest_ExcludesNotReady 验证只有可播放的视频进最新。
+func TestGORMRepository_ListLatest_ExcludesNotReady(t *testing.T) {
+	tx := openTestDB(t)
+	userA, _, _, video1, video2, video3 := createFeedSeedData(t, tx)
+
+	pending := &video.Video{
+		AuthorID:         userA,
+		Title:            "pending video",
+		StorageKey:       "test/pending",
+		OriginalFilename: "pending.mp4",
+		ContentType:      "video/mp4",
+		SizeBytes:        10,
+		Status:           "pending",
+		CreatedAt:        time.Now().Truncate(time.Millisecond),
+	}
+	if err := tx.Create(pending).Error; err != nil {
+		t.Fatalf("create pending video: %v", err)
+	}
+
+	repository := NewGORMRepository(tx)
+	records, err := repository.ListLatest(context.Background(), nil, 10)
+	if err != nil {
+		t.Fatalf("list latest: %v", err)
+	}
+
+	for _, r := range records {
+		if r.ID == pending.ID {
+			t.Fatal("a non-ready video must not appear in the latest feed")
+		}
+	}
+
+	// 种子里的三条 ready 视频依然应该在
+	found := map[uint64]bool{}
+	for _, r := range records {
+		found[r.ID] = true
+	}
+	if !found[video1] || !found[video2] || !found[video3] {
+		t.Fatal("expected the ready seed videos to remain in the latest feed")
+	}
+}
+
 func TestGORMRepository_ListFollowing(t *testing.T) {
 	t.Run("第一页：只返回关注作者的视频，按时间与 ID 稳定降序", func(t *testing.T) {
 		tx := openTestDB(t)

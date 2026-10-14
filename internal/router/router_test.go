@@ -206,10 +206,27 @@ func (f *fakeCommentRouteService) Delete(ctx context.Context, userID, commentID 
 
 type fakeFeedService struct {
 	ListFollowingFunc func(ctx context.Context, userID uint64, cursor *feed.Cursor, pageSize int) (*feed.Page, error)
+	ListLatestFunc    func(ctx context.Context, viewerID uint64, cursor *feed.Cursor, pageSize int) (*feed.Page, error)
 	CallCount         int
 	LastUserID        uint64
 	LastCursor        *feed.Cursor
 	LastPageSize      int
+}
+
+func (f *fakeFeedService) ListLatest(
+	ctx context.Context,
+	viewerID uint64,
+	cursor *feed.Cursor,
+	pageSize int,
+) (*feed.Page, error) {
+	f.CallCount++
+	f.LastUserID = viewerID
+	f.LastCursor = cursor
+	f.LastPageSize = pageSize
+	if f.ListLatestFunc != nil {
+		return f.ListLatestFunc(ctx, viewerID, cursor, pageSize)
+	}
+	return &feed.Page{Items: []feed.Item{}, HasMore: false}, nil
 }
 
 func (f *fakeFeedService) ListFollowing(ctx context.Context, userID uint64, cursor *feed.Cursor, pageSize int) (*feed.Page, error) {
@@ -738,6 +755,37 @@ func TestNew_IgnoresForwardedFor(t *testing.T) {
 // alwaysDenyLimiter 模拟额度已经用光。
 // TestNew_ServesEmbeddedConsole 验证内嵌的最小前端能从根路径打开。
 // TestRouter_ListVideosByAuthor 验证 /users/:id/videos 这条路由确实挂上了。
+// TestRouter_LatestFeed 验证 /feed/latest 不需要登录就能访问。
+func TestRouter_LatestFeed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	feedSvc := &fakeFeedService{}
+	engine := New(Dependencies{
+		Logger:                 logger,
+		HealthHandler:          health.NewHandler("test", logger),
+		OptionalAuthMiddleware: func(c *gin.Context) { c.Next() },
+		FeedHandler:            feed.NewHandler(feedSvc, logger),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/feed/latest?page_size=5", nil)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if feedSvc.CallCount != 1 {
+		t.Fatalf("expected the service to be called once, got %d", feedSvc.CallCount)
+	}
+	if feedSvc.LastUserID != 0 {
+		t.Errorf("expected anonymous viewer ID 0, got %d", feedSvc.LastUserID)
+	}
+	if feedSvc.LastPageSize != 5 {
+		t.Errorf("expected page_size 5, got %d", feedSvc.LastPageSize)
+	}
+}
+
 func TestRouter_ListVideosByAuthor(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

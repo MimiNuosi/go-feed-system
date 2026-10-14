@@ -124,6 +124,7 @@
   </section>
 
   <nav class="tabs" id="tabs" hidden>
+    <button data-tab="latest">最新</button>
     <button data-tab="following" class="active">关注 Feed</button>
     <button data-tab="hot">热榜</button>
     <button data-tab="mine">我的视频</button>
@@ -176,6 +177,7 @@
     token: localStorage.getItem('feed_token') || '',
     user: null,
     tab: 'following',
+    latest: { cursor: '', hasMore: true },
     following: { cursor: '', hasMore: true },
     hot: { window: '1h', cursor: '', hasMore: true },
     mine: { cursor: '', hasMore: true },
@@ -289,6 +291,8 @@
     var path;
     if (state.tab === 'hot') {
       path = '/feed/hot?window=' + box.window + '&page_size=5';
+    } else if (state.tab === 'latest') {
+      path = '/feed/latest?page_size=5';
     } else if (state.tab === 'mine') {
       path = '/users/' + (state.user ? state.user.id : 0) + '/videos?page_size=5';
     } else {

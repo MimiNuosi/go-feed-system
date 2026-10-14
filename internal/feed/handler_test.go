@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,11 +19,28 @@ import (
 // 1. Fake ServiceAPI
 type fakeFeedService struct {
 	ListFollowingFunc func(ctx context.Context, userID uint64, cursor *Cursor, pageSize int) (*Page, error)
+	ListLatestFunc    func(ctx context.Context, viewerID uint64, cursor *Cursor, pageSize int) (*Page, error)
 
 	CallCount    int
 	LastUserID   uint64
 	LastCursor   *Cursor
 	LastPageSize int
+}
+
+func (f *fakeFeedService) ListLatest(
+	ctx context.Context,
+	viewerID uint64,
+	cursor *Cursor,
+	pageSize int,
+) (*Page, error) {
+	f.CallCount++
+	f.LastUserID = viewerID
+	f.LastCursor = cursor
+	f.LastPageSize = pageSize
+	if f.ListLatestFunc != nil {
+		return f.ListLatestFunc(ctx, viewerID, cursor, pageSize)
+	}
+	return &Page{Items: []Item{}, HasMore: false}, nil
 }
 
 func (f *fakeFeedService) ListFollowing(ctx context.Context, userID uint64, cursor *Cursor, pageSize int) (*Page, error) {
@@ -38,6 +56,139 @@ func (f *fakeFeedService) ListFollowing(ctx context.Context, userID uint64, curs
 
 func newDiscardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func TestHandler_ListLatest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	validCursor, err := encodeCursor(Cursor{
+		CreatedAt: time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC),
+		ID:        42,
+	})
+	if err != nil {
+		t.Fatalf("encode cursor: %v", err)
+	}
+
+	tests := []struct {
+		name          string
+		query         string
+		withViewer    bool
+		serviceErr    error
+		wantStatus    int
+		wantCalls     int
+		wantViewerID  uint64
+		wantPageSize  int
+		wantCursorID  uint64
+		wantItemsBody bool
+	}{
+		{
+			name:          "匿名也能看最新",
+			wantStatus:    http.StatusOK,
+			wantCalls:     1,
+			wantViewerID:  0,
+			wantItemsBody: true,
+		},
+		{
+			name:          "登录用户带上 viewerID 与 page_size",
+			query:         "?page_size=5",
+			withViewer:    true,
+			wantStatus:    http.StatusOK,
+			wantCalls:     1,
+			wantViewerID:  7,
+			wantPageSize:  5,
+			wantItemsBody: true,
+		},
+		{
+			name:         "游标被解析后传给 Service",
+			query:        "?cursor=" + validCursor,
+			wantStatus:   http.StatusOK,
+			wantCalls:    1,
+			wantCursorID: 42,
+		},
+		{
+			name:       "游标非法返回 400",
+			query:      "?cursor=oops",
+			wantStatus: http.StatusBadRequest,
+			wantCalls:  0,
+		},
+		{
+			name:       "page_size 非法返回 400",
+			query:      "?page_size=-1",
+			wantStatus: http.StatusBadRequest,
+			wantCalls:  0,
+		},
+		{
+			name:       "Service 参数错误返回 400",
+			serviceErr: ErrInvalidInput,
+			wantStatus: http.StatusBadRequest,
+			wantCalls:  1,
+		},
+		{
+			name:       "Service 内部错误返回 500",
+			serviceErr: errors.New("boom"),
+			wantStatus: http.StatusInternalServerError,
+			wantCalls:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &fakeFeedService{
+				ListLatestFunc: func(
+					ctx context.Context,
+					viewerID uint64,
+					cursor *Cursor,
+					pageSize int,
+				) (*Page, error) {
+					if tt.serviceErr != nil {
+						return nil, tt.serviceErr
+					}
+					return &Page{
+						Items:   []Item{{ID: 100, Title: "latest video"}},
+						HasMore: false,
+					}, nil
+				},
+			}
+
+			handler := NewHandler(service, newDiscardLogger())
+			engine := gin.New()
+			engine.GET("/api/v1/feed/latest", func(c *gin.Context) {
+				if tt.withViewer {
+					ctx := authctx.WithUserID(c.Request.Context(), 7)
+					c.Request = c.Request.WithContext(ctx)
+				}
+				handler.ListLatest(c)
+			})
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/feed/latest"+tt.query, nil)
+			w := httptest.NewRecorder()
+			engine.ServeHTTP(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("expected %d, got %d body=%s", tt.wantStatus, w.Code, w.Body.String())
+			}
+			if service.CallCount != tt.wantCalls {
+				t.Fatalf("expected %d service calls, got %d", tt.wantCalls, service.CallCount)
+			}
+			if tt.wantCalls == 0 {
+				return
+			}
+			if service.LastUserID != tt.wantViewerID {
+				t.Errorf("expected viewerID %d, got %d", tt.wantViewerID, service.LastUserID)
+			}
+			if service.LastPageSize != tt.wantPageSize {
+				t.Errorf("expected pageSize %d, got %d", tt.wantPageSize, service.LastPageSize)
+			}
+			if tt.wantCursorID != 0 {
+				if service.LastCursor == nil || service.LastCursor.ID != tt.wantCursorID {
+					t.Fatalf("expected cursor ID %d, got %+v", tt.wantCursorID, service.LastCursor)
+				}
+			}
+			if tt.wantItemsBody && !strings.Contains(w.Body.String(), "latest video") {
+				t.Errorf("expected items in body, got %s", w.Body.String())
+			}
+		})
+	}
 }
 
 func TestHandler_ListFollowing(t *testing.T) {

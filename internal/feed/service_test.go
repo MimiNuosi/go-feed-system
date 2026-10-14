@@ -16,6 +16,7 @@ var errDBError = errors.New("database connection lost")
 // 1. Fake Repository
 type fakeFeedRepository struct {
 	ListFollowingFunc      func(ctx context.Context, followerID uint64, cursor *Cursor, limit int) ([]VideoRecord, error)
+	ListLatestFunc         func(ctx context.Context, cursor *Cursor, limit int) ([]VideoRecord, error)
 	ListVisibleByIDsFunc   func(ctx context.Context, followerID uint64, videoIDs []uint64) ([]VideoRecord, error)
 	ListBigAuthorIDsFunc   func(ctx context.Context, followerID uint64, threshold int) ([]uint64, error)
 	ListByAuthorIDsFunc    func(ctx context.Context, authorIDs []uint64, cursor *Cursor, limit int) ([]VideoRecord, error)
@@ -28,6 +29,22 @@ type fakeFeedRepository struct {
 	LastLimit              int
 	LastVisibleFollowerID  uint64
 	LastVideoIDs           []uint64
+	LastLatestCursor       *Cursor
+	LastLatestLimit        int
+}
+
+func (f *fakeFeedRepository) ListLatest(
+	ctx context.Context,
+	cursor *Cursor,
+	limit int,
+) ([]VideoRecord, error) {
+	f.CallCount++
+	f.LastLatestCursor = cursor
+	f.LastLatestLimit = limit
+	if f.ListLatestFunc != nil {
+		return f.ListLatestFunc(ctx, cursor, limit)
+	}
+	return []VideoRecord{}, nil
 }
 
 func (f *fakeFeedRepository) ListFollowing(ctx context.Context, followerID uint64, cursor *Cursor, limit int) ([]VideoRecord, error) {
@@ -166,6 +183,187 @@ func (f *fakeBigAuthorCache) Delete(ctx context.Context, userID uint64) error {
 }
 
 // 4. 表驱动测试
+func TestService_ListLatest(t *testing.T) {
+	now := time.Now()
+	errRepo := errors.New("repository failed")
+	errLiked := errors.New("liked lookup failed")
+
+	records := []VideoRecord{
+		{ID: 100, AuthorID: 10, Title: "v1", CreatedAt: now},
+		{ID: 101, AuthorID: 11, Title: "v2", CreatedAt: now.Add(-time.Hour)},
+	}
+
+	tests := []struct {
+		name        string
+		viewerID    uint64
+		pageSize    int
+		records     []VideoRecord
+		repoErr     error
+		likedErr    error
+		wantErr     error
+		wantItems   int
+		wantLiked   int
+		wantLimit   int
+		wantNoNext  bool
+		wantIsLiked bool
+	}{
+		{
+			name:       "匿名访问不查询点赞状态",
+			viewerID:   0,
+			pageSize:   5,
+			records:    records,
+			wantItems:  2,
+			wantLiked:  0,
+			wantLimit:  6,
+			wantNoNext: true,
+		},
+		{
+			name:        "登录用户附带点赞状态",
+			viewerID:    7,
+			pageSize:    5,
+			records:     records,
+			wantItems:   2,
+			wantLiked:   1,
+			wantLimit:   6,
+			wantNoNext:  true,
+			wantIsLiked: true,
+		},
+		{
+			name:       "空结果直接返回空页",
+			viewerID:   7,
+			pageSize:   5,
+			records:    nil,
+			wantItems:  0,
+			wantLiked:  0,
+			wantLimit:  6,
+			wantNoNext: true,
+		},
+		{
+			name:       "多返回一条说明还有下一页",
+			viewerID:   0,
+			pageSize:   1,
+			records:    records,
+			wantItems:  1,
+			wantLiked:  0,
+			wantLimit:  2,
+			wantNoNext: false,
+		},
+		{
+			name:       "页大小为空用默认值",
+			viewerID:   0,
+			pageSize:   0,
+			records:    records,
+			wantItems:  2,
+			wantLiked:  0,
+			wantLimit:  DefaultPageSize + 1,
+			wantNoNext: true,
+		},
+		{
+			name:       "页大小超过上限被裁剪",
+			viewerID:   0,
+			pageSize:   1000,
+			records:    records,
+			wantItems:  2,
+			wantLiked:  0,
+			wantLimit:  MaxPageSize + 1,
+			wantNoNext: true,
+		},
+		{
+			name:      "仓储错误原样透传",
+			viewerID:  0,
+			pageSize:  5,
+			repoErr:   errRepo,
+			wantErr:   errRepo,
+			wantLiked: 0,
+			wantLimit: 6,
+		},
+		{
+			name:      "点赞查询失败原样透传",
+			viewerID:  7,
+			pageSize:  5,
+			records:   records,
+			likedErr:  errLiked,
+			wantErr:   errLiked,
+			wantLiked: 1,
+			wantLimit: 6,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotLimit int
+			videoRepo := &fakeFeedRepository{
+				ListLatestFunc: func(ctx context.Context, cursor *Cursor, limit int) ([]VideoRecord, error) {
+					gotLimit = limit
+					if tt.repoErr != nil {
+						return nil, tt.repoErr
+					}
+					return tt.records, nil
+				},
+			}
+			userReader := &fakeFeedUserReader{
+				GetByIDsFunc: func(ctx context.Context, ids []uint64) (map[uint64]*user.User, error) {
+					out := make(map[uint64]*user.User, len(ids))
+					for _, id := range ids {
+						out[id] = &user.User{ID: id, Username: "user"}
+					}
+					return out, nil
+				},
+			}
+			likeReader := &fakeFeedLikeReader{
+				CountByVideoIDsFunc: func(ctx context.Context, videoIDs []uint64) (map[uint64]int64, error) {
+					return map[uint64]int64{100: 3}, nil
+				},
+				LikedVideoIDsByUserFunc: func(ctx context.Context, userID uint64, videoIDs []uint64) (map[uint64]bool, error) {
+					if tt.likedErr != nil {
+						return nil, tt.likedErr
+					}
+					return map[uint64]bool{100: true}, nil
+				},
+			}
+
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			svc := NewService(videoRepo, userReader, likeReader, nil, nil, 1000, logger)
+
+			page, err := svc.ListLatest(context.Background(), tt.viewerID, nil, tt.pageSize)
+
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("expected error %v, got %v", tt.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("list latest: %v", err)
+			}
+
+			if len(page.Items) != tt.wantItems {
+				t.Errorf("expected %d items, got %d", tt.wantItems, len(page.Items))
+			}
+			if likeReader.LikedCallCount != tt.wantLiked {
+				t.Errorf("expected %d liked lookups, got %d", tt.wantLiked, likeReader.LikedCallCount)
+			}
+			if gotLimit != tt.wantLimit {
+				t.Errorf("expected limit %d, got %d", tt.wantLimit, gotLimit)
+			}
+			if tt.wantNoNext && page.NextCursor != "" {
+				t.Errorf("expected no next cursor, got %q", page.NextCursor)
+			}
+			if !tt.wantNoNext && page.NextCursor == "" {
+				t.Error("expected a next cursor for the next page")
+			}
+			if tt.wantItems > 0 {
+				if page.Items[0].IsLikedBy != tt.wantIsLiked {
+					t.Errorf("expected IsLikedBy %v, got %v", tt.wantIsLiked, page.Items[0].IsLikedBy)
+				}
+				if page.Items[0].LikeCount != 3 {
+					t.Errorf("expected like count 3, got %d", page.Items[0].LikeCount)
+				}
+			}
+		})
+	}
+}
+
 func TestService_ListFollowing(t *testing.T) {
 	now := time.Now()
 	validUserMap := map[uint64]*user.User{
