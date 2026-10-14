@@ -355,6 +355,17 @@ videos.view_count BIGINT UNSIGNED NOT NULL DEFAULT 0
       当前单实例部署 + singleflight 已经合并了击穿，留到多副本时再补。
 - [x] 补充并发和 Redis 故障测试。
 
+阶段 10 又在这个基础上补了两件事（见 docs/10）：
+
+```text
+1. 榜单缓存的过期条目会回收了：加入条目上限，满员时先清过期条目、
+   再淘汰最早写入的那条；读路径仍然只加读锁，不为了精确 LRU 去抢写锁。
+2. 新增读模型缓存（internal/hot/itemcache.go）：把"视频 + 作者 + 点赞数"
+   这 3 条 SQL 的结果按 1 秒 TTL 缓存；is_liked_by 属于访问者维度、
+   不进缓存而是按请求实时查，所以一条缓存可以被所有匿名用户共享。
+   匿名请求的 SQL 从 3.01 条降到 0.01 条，api CPU 从 150% 降到 43%。
+```
+
 ### 9.5 浏览量回写
 
 - [x] 回写 Worker、指标与 main 接线。
