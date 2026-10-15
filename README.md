@@ -99,6 +99,8 @@ GET /api/v1/videos/1（优化后）     4000 rps   1.4~2.1ms  2.4~6.0ms 每请�
 5. 视频只做容器级校验（ftyp/EBML），没有转码与编码级校验
 6. 未做真正的多实例部署验证（负载均衡、会话一致性）
 7. 热榜读模型缓存有 1 秒陈旧窗口：热门视频的点赞数最多滞后 1 秒才更新
+8. 内嵌控制台是单文件内联脚本、没有 CSP，只用于人工验证；生产环境应交给
+   nginx/CDN 与独立前端工程
 ```
 
 ## 技术栈
@@ -113,11 +115,13 @@ RabbitMQ
 Prometheus
 Grafana
 Docker Compose
+vegeta（压测）
+go:embed（内嵌控制台，免 npm 构建）
 ```
 
 ## 当前阶段
 
-阶段 10：压测与性能调优（已完成）。
+阶段 12：演示手册与交付收尾（已完成）。
 
 已完成：
 
@@ -128,6 +132,8 @@ Docker Compose
 阶段 8     Docker Compose 完整环境、多阶段构建、GitHub Actions
 阶段 9     滑动窗口热榜、防击穿、浏览量回写、两层限流、游标分页
 阶段 10    vegeta 速率阶梯压测、语句级瓶颈定位与两步优化
+阶段 11    go:embed 内嵌控制台、最新频道与按作者作品页、播放量自动计数
+阶段 12    端到端走查脚本、演示手册、文档与验收项对齐代码
 ```
 
 ## 项目结构
@@ -144,6 +150,7 @@ migrations/          只读 SQL 迁移
 deploy/prometheus    Prometheus 配置与告警
 deploy/grafana       Grafana 数据源和 Dashboard
 deploy/loadtest      vegeta 压测脚本与目标文件
+deploy/demo          端到端走查脚本（注册/上传/互动/Feed 全链路冒烟）
 docs/                分阶段设计记录与压测报告
 ```
 
@@ -283,6 +290,15 @@ go run ./cmd/feedrebuild -user-id <id>
 go run ./cmd/feedrebuild -user-id <id> -execute
 ```
 
+端到端走查（会自动注册两个账号，把上传到 Feed 的全部接口跑一遍）：
+
+```powershell
+pwsh -File deploy/demo/walkthrough.ps1 -SampleVideo D:\path\to\clip.mp4
+```
+
+它把 [docs/12](docs/12-demo-runbook.md) 里的演示路线固化成脚本，
+失败时退出码为 1，可以当冒烟测试用。
+
 ## 常用开发命令
 
 ```powershell
@@ -293,6 +309,24 @@ go test ./...
 go vet ./...
 go build ./cmd/...
 ```
+
+不带环境变量时 `go test ./...` 只跑单元测试，集成测试会自行跳过。
+要跑集成测试（需要上面那套 Compose 起着），按下面给变量赋值：
+
+```powershell
+$env:TEST_MYSQL_DSN='feed_app:<MYSQL_PASSWORD>@tcp(127.0.0.1:13308)/go_feed?charset=utf8mb4&parseTime=True&loc=Local&interpolateParams=true'
+$env:TEST_REDIS_ADDR='127.0.0.1:16380'
+$env:TEST_REDIS_DB='15'
+$env:TEST_REDIS_PASSWORD='<REDIS_PASSWORD>'
+$env:TEST_RABBITMQ_URL='amqp://feed_app:<RABBITMQ_DEFAULT_PASS>@127.0.0.1:15673/'
+
+go test -count=1 ./...
+```
+
+`interpolateParams=true` 必须带上：Docker 里的 API 就是这么连的，
+少了它测出来的是驱动的另一套行为（阶段 11 踩过这个坑，见
+[docs/11](docs/11-minimal-console.md)）。集成测试用 `TEST_REDIS_DB=15`
+隔离，不会碰业务库的业务 Redis 数据。
 
 ## 分阶段文档
 
@@ -308,3 +342,4 @@ go build ./cmd/...
 - [阶段 9：热门 Feed、滑动窗口热榜与防击穿](docs/09-hot-ranking.md)
 - [阶段 10：压测与性能调优](docs/10-load-testing.md)
 - [阶段 11：最小前端控制台（人工验证）](docs/11-minimal-console.md)
+- [阶段 12：演示手册（5 分钟走完全链路）](docs/12-demo-runbook.md)

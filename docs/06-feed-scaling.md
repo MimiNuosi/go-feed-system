@@ -122,7 +122,7 @@ ZREMRANGEBYRANK
 8. [x] 增加 Consumer Supervisor 和断线恢复。
 9. [x] 增加 DLQ 运维工具。
 10. [x] 增加健康检查分层和 Prometheus 指标。
-11. [ ] 实现 Feed Inbox 重建工具。
+11. [x] 实现 Feed Inbox 重建工具（`cmd/feedrebuild`，默认 dry run，加 `-execute` 才写 Redis）。
 
 ## 面试追问
 

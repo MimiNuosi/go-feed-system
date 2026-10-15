@@ -132,13 +132,37 @@ CI 的作用类似自动化的 C++ 构建机：
 
 ## 验收标准
 
-- [ ] 新机器只需 Docker 和 Compose 即可启动完整环境。
-- [ ] MySQL、Redis、RabbitMQ 数据重启后不丢失。
-- [ ] API 可在 RabbitMQ 暂时不可用时启动。
-- [ ] `/livez`、`/readyz` 和 `/metrics` 可访问。
-- [ ] Prometheus 能抓到 API 指标。
-- [ ] Grafana 自动出现 `Go Feed System` Dashboard。
-- [ ] CI 对非格式化、测试失败和无效配置返回失败。
+- [x] 新机器只需 Docker 和 Compose 即可启动完整环境。
+- [x] API 可在 RabbitMQ 暂时不可用时启动。
+- [x] `/livez`、`/readyz` 和 `/metrics` 可访问。
+- [x] Prometheus 能抓到 API 指标。
+- [x] Grafana 自动出现 `Go Feed System` Dashboard。
+- [x] CI 对非格式化、测试失败和无效配置返回失败。
+- [x] MySQL、Redis、RabbitMQ 数据重启后不丢失。
+
+最后一条的实测记录（`docker compose down` 会删容器但保留 named volume）：
+
+```text
+重启前  MySQL users/videos/comments = 20/10/6   Redis DBSIZE = 42
+docker compose down && docker compose up -d
+重启后  MySQL users/videos/comments = 20/10/6   Redis DBSIZE = 40
+        volume：mysql_data / redis_data / rabbitmq_data / video_data 都在
+```
+
+Redis 少的那 2 个键是带 TTL 的去重键自然过期，不是丢数据。
+`docker compose down -v` 会连 volume 一起删，那才是真的清库。
+
+**这些是怎么验的**：前六条在本地 Docker Desktop（WSL2 后端）上按 README 的
+《Docker Compose 启动》实跑过一遍：`docker compose up -d --build` 起 7 个容器，
+探针与 `/metrics` 返回 200，Prometheus 抓取目标 `health=up`，Grafana 自动加载
+`Go Feed System` Dashboard；"RabbitMQ 不可用时仍可启动"这条是在阶段 7 验证的
+（停掉 RabbitMQ 后 `/livez` 正常、`/readyz` 返回 degraded，见
+[docs/07](07-operations-observability.md)）；最后一条靠
+`.github/workflows/ci.yml` 的 gofmt 检查与 `go test`/`go vet` 的退出码，
+再加上 `deploy/ci` 包里对 workflow 与配置文件的解析测试。
+
+CI 里没有起 MySQL/Redis/RabbitMQ 的 service container，所以线上跑的是单元测试；
+集成测试依赖本地 Compose 环境，跑法见 README 的《常用开发命令》。
 
 ## 面试追问
 
