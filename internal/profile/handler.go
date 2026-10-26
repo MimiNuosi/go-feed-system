@@ -83,6 +83,7 @@ type profileResponse struct {
 	LikesReceived int64    `json:"likes_received"`
 	IsFollowing   bool     `json:"is_following"`
 	IsMe          bool     `json:"is_me"`
+	AvatarURL     string   `json:"avatar_url,omitempty"`
 }
 
 type userItem struct {
@@ -144,7 +145,15 @@ func (h *Handler) GetProfile(c *gin.Context) {
 		LikesReceived: likesReceived,
 		IsFollowing:   isFollowing,
 		IsMe:          viewerID == targetID,
+		AvatarURL:     avatarURL(target.ID, target.AvatarKey),
 	})
+}
+
+func avatarURL(userID uint64, avatarKey string) string {
+	if avatarKey == "" {
+		return ""
+	}
+	return fmt.Sprintf("/api/v1/users/%d/avatar", userID)
 }
 
 // ListFollowers 返回粉丝列表（按关注时间倒序）。

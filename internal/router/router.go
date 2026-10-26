@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"go-feed-system/internal/avatar"
 	"go-feed-system/internal/feed"
 	"go-feed-system/internal/health"
 	"go-feed-system/internal/hot"
@@ -27,6 +28,7 @@ type Dependencies struct {
 	GlobalRateLimit        gin.HandlerFunc
 	IdentityRateLimit      gin.HandlerFunc
 	HealthHandler          *health.Handler
+	AvatarHandler          *avatar.Handler
 	UserHandler            *user.Handler
 	AuthMiddleware         gin.HandlerFunc
 	OptionalAuthMiddleware gin.HandlerFunc
@@ -124,6 +126,7 @@ func New(deps Dependencies) *gin.Engine {
 	// 1. 公开接口（无需鉴权）
 	v1.POST("/auth/register", deps.UserHandler.Register)
 	v1.POST("/auth/login", deps.UserHandler.Login)
+	v1.POST("/auth/refresh", deps.UserHandler.Refresh)
 	v1.GET("/videos/:id/comments", deps.CommentHandler.List)
 	v1.GET(
 		"/users/:id/videos",
@@ -138,6 +141,7 @@ func New(deps Dependencies) *gin.Engine {
 		identityRateLimit,
 		deps.ProfileHandler.GetProfile,
 	)
+	v1.GET("/users/:id/avatar", deps.AvatarHandler.Get)
 	v1.GET(
 		"/users/:id/followers",
 		deps.OptionalAuthMiddleware,
@@ -176,6 +180,9 @@ func New(deps Dependencies) *gin.Engine {
 	auth.Use(identityRateLimit)   // 身份限流必须在鉴权之后
 	{
 		auth.GET("/users/me", deps.UserHandler.Me)
+		auth.POST("/users/me/avatar", deps.AvatarHandler.Upload)
+		auth.POST("/auth/logout", deps.UserHandler.Logout)
+		auth.POST("/users/me/password", deps.UserHandler.ChangePassword)
 		auth.GET("/users/me/liked-videos", deps.ProfileHandler.ListLikedVideos)
 		auth.POST("/videos", deps.VideoHandler.Upload)
 		auth.POST("/videos/chunk/init", deps.UploadHandler.Init)

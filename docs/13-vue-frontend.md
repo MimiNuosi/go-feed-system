@@ -114,6 +114,38 @@ init 后只上传缺失分片，3 个并发 + 每片 3 次重试，进度条展�
 go test ./internal/upload -> 通过（合并内容、MD5 传递、秒传、不完整上传）
 ```
 
+## 13.4 Refresh Token、改密、登出与头像
+
+**Refresh Token**：登录返回 access + refresh 两枚令牌。refresh 是 32 字节随机值，
+数据库 `refresh_tokens` 只存 SHA-256 哈希；有效期 30 天，每次刷新都轮换
+（旧 refresh 立即吊销），改密时吊销该用户全部 refresh。
+
+```text
+POST /api/v1/auth/refresh   {refresh_token} -> 新 access + 新 refresh（旧 refresh 失效）
+POST /api/v1/auth/logout    {refresh_token} -> 204（幂等）
+POST /api/v1/users/me/password {old_password,new_password} -> 204，并吊销全部 refresh
+```
+
+前端 `api.ts` 在收到 401 时自动用 refresh 换新令牌并重试原请求；refresh 也失败才清 token
+跳登录。并发请求共用一个 refresh promise，避免同一时刻发起多次刷新。
+
+**头像**：`POST /users/me/avatar`（multipart）上传，服务端校验 ≤2MB、
+用 `http.DetectContentType` 嗅探 jpeg/png/webp，存到 `avatars/<uuid>.<ext>`，
+并更新 `users.avatar_key`。`GET /users/:id/avatar` 公开读取，带 5 分钟缓存。
+用户主页与 `/users/me` 返回 `avatar_url`。
+
+前端新增 `/settings`：更换头像、修改密码（成功后强制重新登录）、退出登录。
+
+实测：
+
+```text
+refresh 轮换：旧 refresh 再用 -> 401
+改密：旧密码登录 -> 401，新密码登录 -> 200
+登出：refresh 再用 -> 401
+头像：上传 64x64 PNG -> avatar_key，GET 返回 image/png 200，profile.avatar_url 正确
+用户主页渲染出头像（无头 Chrome 截图核对）
+```
+
 ## 验证
 
 ```text
@@ -140,6 +172,5 @@ docker compose up -d --build api 容器 healthy
 ## 下一步
 
 ```text
-13.4 Refresh Token、改密、登出、头像
 13.5 SSE 通知、私信
 ```

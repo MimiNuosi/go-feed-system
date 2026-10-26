@@ -18,6 +18,8 @@ type Repository interface {
 	FindByEmail(ctx context.Context, email string) (*User, error)
 	FindByID(ctx context.Context, id uint64) (*User, error)
 	FindByIDs(ctx context.Context, ids []uint64) ([]User, error)
+	UpdatePassword(ctx context.Context, id uint64, passwordHash string) error
+	UpdateAvatarKey(ctx context.Context, id uint64, avatarKey string) error
 }
 
 type GORMRepository struct {
@@ -81,4 +83,32 @@ func (r *GORMRepository) FindByIDs(ctx context.Context, ids []uint64) ([]User, e
 		return nil, fmt.Errorf("find users by ids: %w", err)
 	}
 	return users, nil
+}
+
+func (r *GORMRepository) UpdatePassword(ctx context.Context, id uint64, passwordHash string) error {
+	result := r.db.WithContext(ctx).
+		Model(&User{}).
+		Where("id = ?", id).
+		Update("password_hash", passwordHash)
+	if result.Error != nil {
+		return fmt.Errorf("update password: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *GORMRepository) UpdateAvatarKey(ctx context.Context, id uint64, avatarKey string) error {
+	result := r.db.WithContext(ctx).
+		Model(&User{}).
+		Where("id = ?", id).
+		Update("avatar_key", avatarKey)
+	if result.Error != nil {
+		return fmt.Errorf("update avatar key: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

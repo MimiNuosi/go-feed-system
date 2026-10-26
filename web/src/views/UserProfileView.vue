@@ -105,7 +105,13 @@ onMounted(loadProfile);
 
     <template v-else>
       <header class="header">
-        <div class="avatar">{{ profile.user.username.slice(0, 1).toUpperCase() }}</div>
+        <img
+          v-if="profile.avatar_url"
+          :src="profile.avatar_url"
+          alt="头像"
+          class="avatar"
+        />
+        <div v-else class="avatar">{{ profile.user.username.slice(0, 1).toUpperCase() }}</div>
         <div class="who">
           <h1>{{ profile.user.username }}</h1>
           <div class="stats">
@@ -195,6 +201,7 @@ onMounted(loadProfile);
   width: 72px;
   height: 72px;
   border-radius: 50%;
+  object-fit: cover;
   background: var(--accent);
   display: grid;
   place-items: center;

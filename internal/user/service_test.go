@@ -33,8 +33,77 @@ func (r *fakeRepository) FindByEmail(ctx context.Context, email string) (*User, 
 	return nil, ErrNotFound
 }
 func (r *fakeRepository) FindByID(ctx context.Context, id uint64) (*User, error) {
-	// ... 略
+	for _, u := range r.users {
+		if u.ID == id {
+			return u, nil
+		}
+	}
 	return nil, ErrNotFound
+}
+
+func (r *fakeRepository) UpdatePassword(ctx context.Context, id uint64, passwordHash string) error {
+	for _, u := range r.users {
+		if u.ID == id {
+			u.PasswordHash = passwordHash
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (r *fakeRepository) UpdateAvatarKey(ctx context.Context, id uint64, avatarKey string) error {
+	for _, u := range r.users {
+		if u.ID == id {
+			u.AvatarKey = avatarKey
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+type fakeRefreshRepository struct {
+	byHash map[string]*RefreshToken
+	seq    uint64
+}
+
+func newFakeRefreshRepository() *fakeRefreshRepository {
+	return &fakeRefreshRepository{byHash: map[string]*RefreshToken{}}
+}
+
+func (r *fakeRefreshRepository) Create(ctx context.Context, item *RefreshToken) error {
+	r.seq++
+	item.ID = r.seq
+	copied := *item
+	r.byHash[item.TokenHash] = &copied
+	return nil
+}
+
+func (r *fakeRefreshRepository) FindByHash(ctx context.Context, hash string) (*RefreshToken, error) {
+	if item, ok := r.byHash[hash]; ok {
+		copied := *item
+		return &copied, nil
+	}
+	return nil, ErrRefreshTokenNotFound
+}
+
+func (r *fakeRefreshRepository) Revoke(ctx context.Context, id uint64) error {
+	for _, item := range r.byHash {
+		if item.ID == id && item.RevokedAt == nil {
+			now := time.Now()
+			item.RevokedAt = &now
+		}
+	}
+	return nil
+}
+
+func (r *fakeRefreshRepository) RevokeAllForUser(ctx context.Context, userID uint64) error {
+	now := time.Now()
+	for _, item := range r.byHash {
+		if item.UserID == userID && item.RevokedAt == nil {
+			item.RevokedAt = &now
+		}
+	}
+	return nil
 }
 
 func (r *fakeRepository) FindByIDs(ctx context.Context, ids []uint64) ([]User, error) {
@@ -104,7 +173,7 @@ func TestService_Register(t *testing.T) {
 			}
 
 			// 依赖注入
-			svc := NewService(fakeRepo, realHasher, realTokenManager)
+			svc := NewService(fakeRepo, realHasher, realTokenManager, newFakeRefreshRepository(), 0)
 
 			user, err := svc.Register(context.Background(), tt.rinput)
 			if !errors.Is(err, tt.wantErr) {
@@ -179,15 +248,18 @@ func TestService_Login(t *testing.T) {
 			}
 
 			// 依赖注入
-			svc := NewService(fakeRepo, realHasher, realTokenManager)
+			svc := NewService(fakeRepo, realHasher, realTokenManager, newFakeRefreshRepository(), 0)
 
-			accessToken, err := svc.Login(context.Background(), tt.linput)
+			session, err := svc.Login(context.Background(), tt.linput)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("expected err %v, got %v", tt.wantErr, err)
 			}
 
-			if tt.wantErr == nil && accessToken.Value == "" {
+			if tt.wantErr == nil && session.AccessToken.Value == "" {
 				t.Error("expected access token to be non-empty")
+			}
+			if tt.wantErr == nil && session.RefreshToken == "" {
+				t.Error("expected refresh token to be non-empty")
 			}
 		})
 	}
@@ -232,7 +304,7 @@ func TestService_GetByIDs(t *testing.T) {
 				tt.prepare(repo)
 			}
 
-			svc := NewService(repo, nil, nil)
+			svc := NewService(repo, nil, nil, newFakeRefreshRepository(), 0)
 			users, err := svc.GetByIDs(context.Background(), tt.ids)
 
 			if !errors.Is(err, tt.wantErr) {
@@ -251,5 +323,81 @@ func TestService_GetByIDs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestService_Refresh_RotatesTokens(t *testing.T) {
+	hasher, err := password.NewBcryptHasher(bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("create hasher: %v", err)
+	}
+	manager, err := token.NewManager("test-secret-is-long-enough-for-the-test", "test-issuer", 2*time.Hour)
+	if err != nil {
+		t.Fatalf("create token manager: %v", err)
+	}
+	hash, err := hasher.Hash("password123")
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+
+	repo := &fakeRepository{users: map[string]*User{
+		"a@example.com": {ID: 1, Email: "a@example.com", PasswordHash: hash},
+	}}
+	refreshRepo := newFakeRefreshRepository()
+	svc := NewService(repo, hasher, manager, refreshRepo, 0)
+
+	session, err := svc.Login(context.Background(), LoginInput{Email: "a@example.com", Password: "password123"})
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+
+	rotated, err := svc.Refresh(context.Background(), session.RefreshToken)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if rotated.RefreshToken == session.RefreshToken {
+		t.Fatal("expected refresh token rotation")
+	}
+	if _, err := svc.Refresh(context.Background(), session.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Fatalf("expected old refresh token to be revoked, got %v", err)
+	}
+}
+
+func TestService_ChangePassword(t *testing.T) {
+	hasher, err := password.NewBcryptHasher(bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("create hasher: %v", err)
+	}
+	manager, err := token.NewManager("test-secret-is-long-enough-for-the-test", "test-issuer", 2*time.Hour)
+	if err != nil {
+		t.Fatalf("create token manager: %v", err)
+	}
+	hash, err := hasher.Hash("password123")
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+
+	account := &User{ID: 1, Email: "a@example.com", PasswordHash: hash}
+	repo := &fakeRepository{users: map[string]*User{"a@example.com": account}}
+	refreshRepo := newFakeRefreshRepository()
+	svc := NewService(repo, hasher, manager, refreshRepo, 0)
+
+	session, err := svc.Login(context.Background(), LoginInput{Email: "a@example.com", Password: "password123"})
+	if err != nil {
+		t.Fatalf("login: %v", err)
+	}
+
+	if err := svc.ChangePassword(context.Background(), 1, "wrong-password", "newpassword123"); !errors.Is(err, ErrInvalidOldPassword) {
+		t.Fatalf("expected ErrInvalidOldPassword, got %v", err)
+	}
+	if err := svc.ChangePassword(context.Background(), 1, "password123", "newpassword123"); err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+	if err := hasher.Compare(account.PasswordHash, "newpassword123"); err != nil {
+		t.Fatalf("new password was not stored: %v", err)
+	}
+	// 改密后旧 refresh token 应被吊销。
+	if _, err := svc.Refresh(context.Background(), session.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Fatalf("expected refresh token revoked after password change, got %v", err)
 	}
 }

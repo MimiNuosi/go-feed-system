@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { Flame, Home, LogIn, LogOut, PlusSquare, User, Users } from "lucide-vue-next";
+import { Flame, Home, LogIn, LogOut, PlusSquare, Settings, User, Users } from "lucide-vue-next";
 import { useAuthStore, useToastStore } from "./stores";
 
 const auth = useAuthStore();
@@ -20,14 +20,14 @@ const navItems = [
 const userInitial = computed(() => auth.user?.username.slice(0, 1).toUpperCase() ?? "?");
 const isFeed = computed(() => route.name === "latest" || route.name === "following");
 
-function logout() {
-  auth.logout();
+async function logout() {
+  await auth.logout();
   toast.push("已退出登录");
   router.push("/");
 }
 
 function onExpired() {
-  auth.logout();
+  void auth.logout();
   toast.push("登录已过期，请重新登录", "error");
   if (route.meta.requiresAuth) {
     router.push({ name: "login", query: { redirect: route.fullPath } });
@@ -60,6 +60,9 @@ onUnmounted(() => {
             <span class="avatar">{{ userInitial }}</span>
             <span class="name">{{ auth.user.username }}</span>
           </div>
+          <RouterLink to="/settings" class="btn ghost">
+            <Settings :size="16" /> 设置
+          </RouterLink>
           <button class="btn ghost" @click="logout">
             <LogOut :size="16" /> 退出
           </button>

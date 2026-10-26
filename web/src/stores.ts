@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { api, getToken, setToken, type User } from "./api";
+import { api, getRefreshToken, getToken, setRefreshToken, setToken, type User } from "./api";
 
 interface ToastItem {
   id: number;
@@ -31,16 +31,26 @@ export const useAuthStore = defineStore("auth", {
       const result = await api.login(email, password);
       this.token = result.access_token;
       setToken(result.access_token);
+      setRefreshToken(result.refresh_token);
       this.user = await api.me();
     },
     async register(username: string, email: string, password: string) {
       await api.register(username, email, password);
       await this.login(email, password);
     },
-    logout() {
+    async logout() {
+      const refreshToken = getRefreshToken();
+      if (refreshToken) {
+        try {
+          await api.logout(refreshToken);
+        } catch {
+          // 服务端不可用时也要允许本地退出
+        }
+      }
       this.token = null;
       this.user = null;
       setToken(null);
+      setRefreshToken(null);
     },
   },
 });

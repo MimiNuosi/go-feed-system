@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"go-feed-system/internal/avatar"
 	"go-feed-system/internal/feed"
 	"go-feed-system/internal/health"
 	"go-feed-system/internal/hot"
@@ -103,7 +104,8 @@ func run() error {
 	}
 
 	userRepository := user.NewGORMRepository(db)
-	userService := user.NewService(userRepository, hasher, tokenManager)
+	refreshTokenRepository := user.NewGORMRefreshTokenRepository(db)
+	userService := user.NewService(userRepository, hasher, tokenManager, refreshTokenRepository, 0)
 	userHandler := user.NewHandler(userService)
 
 	videoStorage, err := local.NewStorage(cfg.Storage.LocalDir)
@@ -114,6 +116,9 @@ func run() error {
 	outboxRepository := outbox.NewGORMRepository(db)
 	videoRepository := video.NewGORMRepository(db, outboxRepository)
 	videoService := video.NewService(videoRepository, videoStorage, userService, logger)
+
+	avatarService := avatar.NewService(userRepository, videoStorage)
+	avatarHandler := avatar.NewHandler(avatarService, logger)
 
 	followRepository := interaction.NewGORMFollowRepository(db)
 	followService := interaction.NewFollowService(
@@ -267,6 +272,7 @@ func run() error {
 				Check:    messaging.Ready,
 			},
 		),
+		AvatarHandler:          avatarHandler,
 		UserHandler:            userHandler,
 		AuthMiddleware:         middleware.Auth(tokenManager, logger),
 		OptionalAuthMiddleware: middleware.OptionalAuth(tokenManager, logger),

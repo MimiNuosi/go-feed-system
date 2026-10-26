@@ -54,6 +54,7 @@ export interface User {
   username: string;
   email: string;
   created_at: string;
+  avatar_url?: string;
 }
 
 export interface Profile {
@@ -64,6 +65,7 @@ export interface Profile {
   likes_received: number;
   is_following: boolean;
   is_me: boolean;
+  avatar_url?: string;
 }
 
 export interface UserList {
@@ -88,7 +90,16 @@ export interface ChunkStatus {
   video_id?: number;
 }
 
+export interface AuthTokens {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  expires_at: string;
+  refresh_expires_at: string;
+}
+
 const TOKEN_KEY = "feed.token";
+const REFRESH_KEY = "feed.refresh";
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
@@ -102,6 +113,18 @@ export function setToken(token: string | null): void {
   }
 }
 
+export function getRefreshToken(): string | null {
+  return localStorage.getItem(REFRESH_KEY);
+}
+
+export function setRefreshToken(token: string | null): void {
+  if (token) {
+    localStorage.setItem(REFRESH_KEY, token);
+  } else {
+    localStorage.removeItem(REFRESH_KEY);
+  }
+}
+
 export class ApiError extends Error {
   status: number;
 
@@ -111,7 +134,40 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+let refreshInFlight: Promise<boolean> | null = null;
+
+async function tryRefresh(): Promise<boolean> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) {
+    return false;
+  }
+  if (refreshInFlight) {
+    return refreshInFlight;
+  }
+  refreshInFlight = (async () => {
+    try {
+      const response = await fetch("/api/v1/auth/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      if (!response.ok) {
+        return false;
+      }
+      const data = (await response.json()) as AuthTokens;
+      setToken(data.access_token);
+      setRefreshToken(data.refresh_token);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+  return refreshInFlight;
+}
+
+async function request<T>(path: string, init: RequestInit = {}, allowRefresh = true): Promise<T> {
   const headers = new Headers(init.headers);
   const token = getToken();
   if (token) {
@@ -123,7 +179,14 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   const response = await fetch(`/api/v1${path}`, { ...init, headers });
   if (response.status === 401) {
+    if (allowRefresh && !path.startsWith("/auth/")) {
+      const refreshed = await tryRefresh();
+      if (refreshed) {
+        return request<T>(path, init, false);
+      }
+    }
     setToken(null);
+    setRefreshToken(null);
     window.dispatchEvent(new CustomEvent("auth:expired"));
   }
   if (!response.ok) {
@@ -167,10 +230,31 @@ export const api = {
     }),
 
   login: (email: string, password: string) =>
-    request<{ access_token: string; expires_at: string }>("/auth/login", {
+    request<AuthTokens>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
+    }, false),
+
+  logout: (refreshToken: string) =>
+    request<void>("/auth/logout", {
+      method: "POST",
+      body: JSON.stringify({ refresh_token: refreshToken }),
     }),
+
+  changePassword: (oldPassword: string, newPassword: string) =>
+    request<void>("/users/me/password", {
+      method: "POST",
+      body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+    }),
+
+  uploadAvatar: (file: File) => {
+    const form = new FormData();
+    form.set("file", file);
+    return request<{ avatar_key: string }>("/users/me/avatar", {
+      method: "POST",
+      body: form,
+    });
+  },
 
   me: () => request<User>("/users/me"),
 
