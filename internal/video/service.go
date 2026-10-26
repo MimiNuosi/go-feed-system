@@ -32,6 +32,8 @@ type UploadInput struct {
 	Title            string
 	Description      string
 	OriginalFilename string
+	// FileMD5 由分片上传在 complete 阶段传入（小写 32 位十六进制）；整文件上传可以留空。
+	FileMD5 string
 	// ContentType 是客户端声明的类型，只用于粗筛，绝不会写进数据库。
 	ContentType string
 	SizeBytes   int64
@@ -175,6 +177,7 @@ func (s *Service) Upload(ctx context.Context, input UploadInput) (*Video, error)
 		OriginalFilename: filename,
 		ContentType:      container.MIME,
 		SizeBytes:        input.SizeBytes,
+		FileMD5:          input.FileMD5,
 		Status:           StatusReady, // 如果是异步转码，这里可能就是 "pending"
 		CreatedAt:        time.Now().UTC().Truncate(time.Millisecond),
 	}

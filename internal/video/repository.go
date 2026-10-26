@@ -139,6 +139,29 @@ func (r *GORMRepository) CountByAuthor(ctx context.Context, authorID uint64) (in
 	return count, nil
 }
 
+// FindByAuthorAndMD5 用于秒传：同一作者已有相同 MD5 的视频时直接返回。
+func (r *GORMRepository) FindByAuthorAndMD5(
+	ctx context.Context,
+	authorID uint64,
+	fileMD5 string,
+) (*Video, error) {
+	if fileMD5 == "" {
+		return nil, nil
+	}
+	var item Video
+	err := r.db.WithContext(ctx).
+		Where("author_id = ? AND file_md5 = ? AND status = ?", authorID, fileMD5, StatusReady).
+		Order("id DESC").
+		First(&item).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("find video by author and md5: %w", err)
+	}
+	return &item, nil
+}
+
 // ListByAuthor 按作者列出视频，id 倒序（即"最新发布在前"）。
 //
 // beforeID 是游标：传 0 表示第一页；否则只取 id 小于它的记录。
