@@ -16,6 +16,7 @@ import (
 	"go-feed-system/internal/health"
 	"go-feed-system/internal/hot"
 	"go-feed-system/internal/interaction"
+	"go-feed-system/internal/message"
 	"go-feed-system/internal/middleware"
 	"go-feed-system/internal/notification"
 	"go-feed-system/internal/outbox"
@@ -117,6 +118,15 @@ func run() error {
 		logger,
 	)
 	notificationHandler := notification.NewHandler(notificationService, logger)
+
+	messageRepository := message.NewGORMRepository(db)
+	messageService := message.NewService(
+		messageRepository,
+		userService,
+		message.NewHub(),
+		logger,
+	)
+	messageHandler := message.NewHandler(messageService, logger)
 
 	videoStorage, err := local.NewStorage(cfg.Storage.LocalDir)
 	if err != nil {
@@ -296,6 +306,7 @@ func run() error {
 		UploadHandler:          uploadHandler,
 		CommentHandler:         commentHandler,
 		NotificationHandler:    notificationHandler,
+		MessageHandler:         messageHandler,
 		FeedHandler:            feedHandler,
 		HotHandler:             hotHandler,
 	})

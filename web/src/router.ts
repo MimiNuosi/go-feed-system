@@ -52,6 +52,12 @@ const router = createRouter({
       component: () => import("./views/NotificationsView.vue"),
       meta: { requiresAuth: true },
     },
+    {
+      path: "/messages/:peerId?",
+      name: "messages",
+      component: () => import("./views/MessagesView.vue"),
+      meta: { requiresAuth: true },
+    },
     { path: "/login", name: "login", component: () => import("./views/AuthView.vue") },
     {
       path: "/register",

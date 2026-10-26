@@ -13,6 +13,7 @@ import (
 	"go-feed-system/internal/health"
 	"go-feed-system/internal/hot"
 	"go-feed-system/internal/interaction"
+	"go-feed-system/internal/message"
 	"go-feed-system/internal/middleware"
 	"go-feed-system/internal/notification"
 	"go-feed-system/internal/profile"
@@ -38,6 +39,7 @@ type Dependencies struct {
 	LikeHandler            *interaction.LikeHandler
 	CommentHandler         *interaction.CommentHandler
 	NotificationHandler    *notification.Handler
+	MessageHandler         *message.Handler
 	ProfileHandler         *profile.Handler
 	UploadHandler          *upload.Handler
 	FeedHandler            *feed.Handler
@@ -190,6 +192,15 @@ func New(deps Dependencies) *gin.Engine {
 		auth.GET("/notifications/unread-count", deps.NotificationHandler.UnreadCount)
 		auth.POST("/notifications/read-all", deps.NotificationHandler.MarkAllRead)
 		auth.GET("/notifications/stream", deps.NotificationHandler.Stream)
+
+		// 私信：静态路径放在 :peer_id 之前，避免被动态参数吞掉。
+		auth.POST("/messages", deps.MessageHandler.Send)
+		auth.GET("/messages/conversations", deps.MessageHandler.Conversations)
+		auth.GET("/messages/unread-count", deps.MessageHandler.UnreadCount)
+		auth.GET("/messages/stream", deps.MessageHandler.Stream)
+		auth.GET("/messages/:peer_id", deps.MessageHandler.List)
+		auth.POST("/messages/:peer_id/read", deps.MessageHandler.MarkRead)
+
 		auth.POST("/videos", deps.VideoHandler.Upload)
 		auth.POST("/videos/chunk/init", deps.UploadHandler.Init)
 		auth.POST("/videos/chunk/upload", deps.UploadHandler.UploadChunk)

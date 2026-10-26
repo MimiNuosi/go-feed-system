@@ -15,6 +15,7 @@ import (
 	"go-feed-system/internal/health"
 	"go-feed-system/internal/hot"
 	"go-feed-system/internal/interaction"
+	"go-feed-system/internal/message"
 	"go-feed-system/internal/middleware"
 	"go-feed-system/internal/notification"
 	"go-feed-system/internal/user"
@@ -245,6 +246,74 @@ func (f *fakeNotificationRouteService) Subscribe(
 	return ch, func() { close(ch) }
 }
 
+type fakeMessageRouteService struct {
+	sendCalls          int
+	listCalls          int
+	conversationsCalls int
+	unreadCountCalls   int
+	markReadCalls      int
+	lastUserID         uint64
+	lastPeerID         uint64
+}
+
+func (f *fakeMessageRouteService) Send(
+	ctx context.Context,
+	senderID, receiverID uint64,
+	content string,
+) (*message.Item, error) {
+	f.sendCalls++
+	f.lastUserID = senderID
+	f.lastPeerID = receiverID
+	return &message.Item{
+		ID:         1,
+		SenderID:   senderID,
+		ReceiverID: receiverID,
+		Content:    content,
+	}, nil
+}
+
+func (f *fakeMessageRouteService) List(
+	ctx context.Context,
+	userID, peerID, beforeID uint64,
+	pageSize int,
+) (*message.Page, error) {
+	f.listCalls++
+	f.lastUserID = userID
+	f.lastPeerID = peerID
+	return &message.Page{Items: []message.Item{}}, nil
+}
+
+func (f *fakeMessageRouteService) ListConversations(
+	ctx context.Context,
+	userID uint64,
+) (*message.ConversationList, error) {
+	f.conversationsCalls++
+	f.lastUserID = userID
+	return &message.ConversationList{Items: []message.Conversation{}}, nil
+}
+
+func (f *fakeMessageRouteService) UnreadCount(ctx context.Context, userID uint64) (int64, error) {
+	f.unreadCountCalls++
+	f.lastUserID = userID
+	return 1, nil
+}
+
+func (f *fakeMessageRouteService) MarkConversationRead(
+	ctx context.Context,
+	userID, peerID uint64,
+) error {
+	f.markReadCalls++
+	f.lastUserID = userID
+	f.lastPeerID = peerID
+	return nil
+}
+
+func (f *fakeMessageRouteService) Subscribe(userID uint64) (<-chan message.Item, func()) {
+	f.lastUserID = userID
+	ch := make(chan message.Item)
+	return ch, func() { close(ch) }
+}
+
 type fakeFeedService struct {
 	ListFollowingFunc func(ctx context.Context, userID uint64, cursor *feed.Cursor, pageSize int) (*feed.Page, error)
 	ListLatestFunc    func(ctx context.Context, viewerID uint64, cursor *feed.Cursor, pageSize int) (*feed.Page, error)
@@ -303,6 +372,7 @@ func newTestEngine(
 			&fakeNotificationRouteService{},
 			logger,
 		),
+		MessageHandler: message.NewHandler(&fakeMessageRouteService{}, logger),
 		HotHandler: hot.NewHandler(
 			hotService,
 			hotService,
@@ -313,6 +383,102 @@ func newTestEngine(
 			0, // 这组用例走完整路径，不开读模型缓存
 		),
 	})
+}
+
+func TestMessageRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	service := &fakeMessageRouteService{}
+	authMiddleware := func(c *gin.Context) {
+		ctx := authctx.WithUserID(c.Request.Context(), 7)
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	}
+	engine := New(Dependencies{
+		Logger:         logger,
+		HealthHandler:  health.NewHandler("test", logger),
+		AuthMiddleware: authMiddleware,
+		MessageHandler: message.NewHandler(service, logger),
+	})
+
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		body       string
+		wantStatus int
+		wantCalls  func() int
+		wantPeerID uint64
+	}{
+		{
+			name:       "发送",
+			method:     http.MethodPost,
+			path:       "/api/v1/messages",
+			body:       `{"receiver_id":2,"content":"hello"}`,
+			wantStatus: http.StatusCreated,
+			wantCalls:  func() int { return service.sendCalls },
+			wantPeerID: 2,
+		},
+		{
+			name:       "历史",
+			method:     http.MethodGet,
+			path:       "/api/v1/messages/2",
+			wantStatus: http.StatusOK,
+			wantCalls:  func() int { return service.listCalls },
+			wantPeerID: 2,
+		},
+		{
+			name:       "会话列表",
+			method:     http.MethodGet,
+			path:       "/api/v1/messages/conversations",
+			wantStatus: http.StatusOK,
+			wantCalls:  func() int { return service.conversationsCalls },
+		},
+		{
+			name:       "未读数",
+			method:     http.MethodGet,
+			path:       "/api/v1/messages/unread-count",
+			wantStatus: http.StatusOK,
+			wantCalls:  func() int { return service.unreadCountCalls },
+		},
+		{
+			name:       "已读",
+			method:     http.MethodPost,
+			path:       "/api/v1/messages/2/read",
+			wantStatus: http.StatusNoContent,
+			wantCalls:  func() int { return service.markReadCalls },
+			wantPeerID: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := tt.wantCalls()
+			var body io.Reader
+			if tt.body != "" {
+				body = strings.NewReader(tt.body)
+			}
+			req := httptest.NewRequest(tt.method, tt.path, body)
+			if tt.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, req)
+
+			if recorder.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d body=%s", recorder.Code, tt.wantStatus, recorder.Body.String())
+			}
+			if tt.wantCalls() != before+1 {
+				t.Fatal("expected message handler call")
+			}
+			if service.lastUserID != 7 {
+				t.Fatalf("user id = %d, want 7", service.lastUserID)
+			}
+			if tt.wantPeerID > 0 && service.lastPeerID != tt.wantPeerID {
+				t.Fatalf("peer id = %d, want %d", service.lastPeerID, tt.wantPeerID)
+			}
+		})
+	}
 }
 
 func TestNotificationRoutesRequireAuth(t *testing.T) {

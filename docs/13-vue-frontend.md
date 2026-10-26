@@ -35,6 +35,7 @@ lucide-vue-next（图标）
 | `/me` | 我的作品（需登录） | `GET /users/me`、`GET /users/:id/videos` |
 | `/u/:id` | 用户主页 | `GET /users/:id/profile`、粉丝/关注列表、`/users/:id/videos` |
 | `/notifications` | 通知中心（需登录） | 通知列表、未读数、全部已读、SSE 在线推送 |
+| `/messages`、`/messages/:peerId` | 私信会话（需登录） | 会话列表、历史消息、发送、已读、SSE 提醒 |
 | `/login`、`/register` | 登录 / 注册 | `POST /auth/login`、`POST /auth/register` |
 
 ## 关键实现
@@ -180,11 +181,48 @@ read-all 后未读数 0；A 自己点赞自己的视频不会新增通知
 go test ./internal/notification ./internal/interaction ./internal/router 通过
 ```
 
+## 13.5 私信
+
+私信采用"MySQL 存事实 + SSE 做在线提醒"的模型。消息先成功落库，再广播给
+收件人；即使收件人不在线、SSE 断开或慢订阅者被丢弃，重新打开会话仍能看到
+全部消息和未读数。
+
+```text
+POST /api/v1/messages                    发送消息
+GET  /api/v1/messages/conversations      最近会话与每个会话未读数
+GET  /api/v1/messages/unread-count       私信总未读数
+GET  /api/v1/messages/:peerId            历史消息，id 游标向前翻页
+POST /api/v1/messages/:peerId/read       把该会话内对方发来的消息标记已读
+GET  /api/v1/messages/stream             SSE 实时提醒
+```
+
+实现细节：
+
+```text
+1. 禁止给自己发消息；内容 trim 后 1~2000 字符
+2. 历史查询按 id 倒序多取一条判断 has_more，Service 再反转成旧 -> 新返回
+3. 会话列表用每个 peer 的 MAX(id) 取最后一条，再批量查用户和未读数，避免 N+1
+4. 页面打开会话后标记已读并重新同步总未读数
+5. 用户主页的"私信"直接进入 /messages/:peerId
+6. 通知和私信共用同一套 fetch SSE 解析，但事件类型与 Hub 相互隔离
+```
+
+实测：
+
+```text
+B -> A 连续发送 3 条：A 的 SSE 收到 3 个 message 事件
+未读数 3；会话列表 peer=demoB59372、unread_count=3
+page_size=2 返回最新两条且 has_more=true，cursor 补出第一条
+标记会话已读后总未读数 0
+给自己发返回 400，收件人不存在返回 404
+桌面 1440px 与手机 390px 截图核对，无横向溢出
+```
+
 ## 验证
 
 ```text
 npm run build                    vue-tsc 类型检查 + Vite 构建通过
-产物                             按页面拆包，通知页独立 chunk
+产物                             按页面拆包，通知页/私信页独立 chunk
 GET /、/video/1、/hot、/login     200，SPA 兜底生效
 GET /legacy                      200，旧控制台可用
 GET /api/v1/nope                 404 JSON，API 不被 SPA 吞掉
@@ -195,14 +233,13 @@ GET /api/v1/nope                 404 JSON，API 不被 SPA 吞掉
 ## 已知局限
 
 ```text
-1. 私信尚未实现
-2. 通知 Hub 是单实例内存广播，多实例需要共享消息总线
-3. 前端只有类型检查和构建校验，没有组件级自动化测试
-4. dist 需要手动 npm run build 后提交（Docker 构建不拉 Node 镜像）
+1. 通知与私信 Hub 都是单实例内存广播，多实例需要 Redis Pub/Sub 或 RabbitMQ fanout
+2. 前端只有类型检查、构建校验和截图冒烟，没有组件级自动化测试
+3. dist 需要手动 npm run build 后提交（Docker 构建不拉 Node 镜像）
 ```
 
 ## 下一步
 
 ```text
-13.5 私信：会话列表、历史消息、发送与实时未读
+阶段 13 收尾：全量回归、演示账号与简历材料同步
 ```

@@ -7,17 +7,29 @@ import {
   Home,
   LogIn,
   LogOut,
+  MessagesSquare,
   PlusSquare,
   Settings,
   User,
   Users,
 } from "lucide-vue-next";
-import { streamNotifications, type NotificationItem } from "./api";
-import { useAuthStore, useNotificationStore, useToastStore } from "./stores";
+import {
+  streamMessages,
+  streamNotifications,
+  type MessageItem,
+  type NotificationItem,
+} from "./api";
+import {
+  useAuthStore,
+  useMessageStore,
+  useNotificationStore,
+  useToastStore,
+} from "./stores";
 
 const auth = useAuthStore();
 const toast = useToastStore();
 const notifications = useNotificationStore();
+const messages = useMessageStore();
 const route = useRoute();
 const router = useRouter();
 
@@ -26,6 +38,7 @@ const navItems = [
   { to: "/following", label: "关注", icon: Users },
   { to: "/hot", label: "热榜", icon: Flame },
   { to: "/notifications", label: "通知", icon: Bell },
+  { to: "/messages", label: "私信", icon: MessagesSquare },
   { to: "/upload", label: "发布", icon: PlusSquare },
   { to: "/me", label: "我的", icon: User },
 ];
@@ -33,6 +46,7 @@ const navItems = [
 const userInitial = computed(() => auth.user?.username.slice(0, 1).toUpperCase() ?? "?");
 const isFeed = computed(() => route.name === "latest" || route.name === "following");
 let notificationAbort: AbortController | null = null;
+let messageAbort: AbortController | null = null;
 
 function notificationText(item: NotificationItem): string {
   if (item.kind === "like") {
@@ -80,6 +94,41 @@ function stopNotificationStream() {
   notificationAbort = null;
 }
 
+async function connectMessageStream(signal: AbortSignal) {
+  while (!signal.aborted) {
+    try {
+      await streamMessages((item: MessageItem) => {
+        messages.receive(item);
+        toast.push("收到一条新私信");
+      }, signal);
+    } catch (error) {
+      if (signal.aborted) {
+        return;
+      }
+      console.warn("message stream disconnected", error);
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 3000));
+  }
+}
+
+function startMessageStream() {
+  messageAbort?.abort();
+  messageAbort = null;
+  if (!auth.isLoggedIn) {
+    messages.clear();
+    return;
+  }
+  void messages.refreshUnread();
+  const controller = new AbortController();
+  messageAbort = controller;
+  void connectMessageStream(controller.signal);
+}
+
+function stopMessageStream() {
+  messageAbort?.abort();
+  messageAbort = null;
+}
+
 async function logout() {
   await auth.logout();
   toast.push("已退出登录");
@@ -101,10 +150,18 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopNotificationStream();
+  stopMessageStream();
   window.removeEventListener("auth:expired", onExpired);
 });
 
-watch(() => auth.isLoggedIn, startNotificationStream, { immediate: true });
+watch(
+  () => auth.isLoggedIn,
+  () => {
+    startNotificationStream();
+    startMessageStream();
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -120,6 +177,12 @@ watch(() => auth.isLoggedIn, startNotificationStream, { immediate: true });
             class="badge"
           >
             {{ notifications.unreadCount > 99 ? "99+" : notifications.unreadCount }}
+          </span>
+          <span
+            v-else-if="item.to === '/messages' && messages.unreadCount > 0"
+            class="badge"
+          >
+            {{ messages.unreadCount > 99 ? "99+" : messages.unreadCount }}
           </span>
         </RouterLink>
       </nav>
@@ -155,6 +218,12 @@ watch(() => auth.isLoggedIn, startNotificationStream, { immediate: true });
           class="mobile-badge"
         >
           {{ notifications.unreadCount > 99 ? "99+" : notifications.unreadCount }}
+        </span>
+        <span
+          v-else-if="item.to === '/messages' && messages.unreadCount > 0"
+          class="mobile-badge"
+        >
+          {{ messages.unreadCount > 99 ? "99+" : messages.unreadCount }}
         </span>
       </RouterLink>
     </nav>

@@ -116,6 +116,31 @@ export interface NotificationPage {
   has_more: boolean;
 }
 
+export interface MessageItem {
+  id: number;
+  sender_id: number;
+  receiver_id: number;
+  content: string;
+  created_at: string;
+  read: boolean;
+}
+
+export interface MessagePage {
+  items: MessageItem[];
+  next_cursor?: string;
+  has_more: boolean;
+}
+
+export interface Conversation {
+  peer: Author & { avatar_url?: string };
+  last_message: {
+    content: string;
+    sender_id: number;
+    created_at: string;
+  };
+  unread_count: number;
+}
+
 const TOKEN_KEY = "feed.token";
 const REFRESH_KEY = "feed.refresh";
 
@@ -345,6 +370,24 @@ export const api = {
   markAllNotificationsRead: () =>
     request<void>("/notifications/read-all", { method: "POST" }),
 
+  messages: (peerId: number, cursor?: string, pageSize = 30) =>
+    request<MessagePage>(`/messages/${peerId}?${pageQuery(pageSize, cursor)}`),
+
+  sendMessage: (receiverId: number, content: string) =>
+    request<MessageItem>("/messages", {
+      method: "POST",
+      body: JSON.stringify({ receiver_id: receiverId, content }),
+    }),
+
+  conversations: () =>
+    request<{ items: Conversation[] }>("/messages/conversations"),
+
+  messageUnreadCount: () =>
+    request<{ count: number }>("/messages/unread-count"),
+
+  markConversationRead: (peerId: number) =>
+    request<void>(`/messages/${peerId}/read`, { method: "POST" }),
+
   uploadVideo: (form: FormData) =>
     request<{ id: number; status: string }>("/videos", {
       method: "POST",
@@ -429,10 +472,26 @@ export async function streamNotifications(
   onEvent: (item: NotificationItem) => void,
   signal: AbortSignal,
 ): Promise<void> {
+  return streamSSE("/notifications/stream", "notification", onEvent, signal);
+}
+
+export async function streamMessages(
+  onEvent: (item: MessageItem) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  return streamSSE("/messages/stream", "message", onEvent, signal);
+}
+
+async function streamSSE<T>(
+  path: string,
+  expectedEvent: string,
+  onEvent: (item: T) => void,
+  signal: AbortSignal,
+): Promise<void> {
   let response: Response | null = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     const token = getToken();
-    response = await fetch("/api/v1/notifications/stream", {
+    response = await fetch(`/api/v1${path}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       signal,
     });
@@ -447,7 +506,7 @@ export async function streamNotifications(
     window.dispatchEvent(new CustomEvent("auth:expired"));
   }
   if (!response || !response.ok) {
-    throw new ApiError(response?.status ?? 0, `通知连接失败（${response?.status ?? 0}）`);
+    throw new ApiError(response?.status ?? 0, `实时连接失败（${response?.status ?? 0}）`);
   }
   if (!response.body) {
     throw new ApiError(0, "当前浏览器不支持流式响应");
@@ -479,13 +538,13 @@ export async function streamNotifications(
           dataLines.push(line.slice("data:".length).trimStart());
         }
       }
-      if (eventName !== "notification" || dataLines.length === 0) {
+      if (eventName !== expectedEvent || dataLines.length === 0) {
         continue;
       }
       try {
-        onEvent(JSON.parse(dataLines.join("\n")) as NotificationItem);
+        onEvent(JSON.parse(dataLines.join("\n")) as T);
       } catch {
-        // 单条坏事件不能中断整条连接，下一条通知仍应继续处理。
+        // 单条坏事件不能中断整条连接，后续事件仍应继续处理。
       }
     }
   }

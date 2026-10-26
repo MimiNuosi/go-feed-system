@@ -1,5 +1,13 @@
 import { defineStore } from "pinia";
-import { api, getRefreshToken, getToken, setRefreshToken, setToken, type User } from "./api";
+import {
+  api,
+  getRefreshToken,
+  getToken,
+  setRefreshToken,
+  setToken,
+  type MessageItem,
+  type User,
+} from "./api";
 
 interface ToastItem {
   id: number;
@@ -98,6 +106,35 @@ export const useNotificationStore = defineStore("notifications", {
     },
     clear() {
       this.unreadCount = 0;
+    },
+  },
+});
+
+export const useMessageStore = defineStore("messages", {
+  state: () => ({
+    unreadCount: 0,
+    latestEvent: null as MessageItem | null,
+  }),
+  actions: {
+    async refreshUnread() {
+      if (!getToken()) {
+        this.unreadCount = 0;
+        return;
+      }
+      try {
+        const result = await api.messageUnreadCount();
+        this.unreadCount = result.count;
+      } catch {
+        // 私信计数失败不影响主页面；进入消息页时会再次同步。
+      }
+    },
+    receive(item: MessageItem) {
+      this.unreadCount += 1;
+      this.latestEvent = item;
+    },
+    clear() {
+      this.unreadCount = 0;
+      this.latestEvent = null;
     },
   },
 });

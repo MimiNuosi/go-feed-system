@@ -121,15 +121,17 @@ onMounted(loadProfile);
             <span><b>{{ profile.likes_received }}</b> 获赞</span>
           </div>
         </div>
-        <button
-          v-if="!profile.is_me"
-          class="btn"
-          :class="{ primary: !profile.is_following }"
-          :disabled="followBusy"
-          @click="toggleFollow"
-        >
-          {{ profile.is_following ? "已关注" : "关注" }}
-        </button>
+        <div v-if="!profile.is_me" class="actions">
+          <RouterLink :to="`/messages/${profile.user.id}`" class="btn">私信</RouterLink>
+          <button
+            class="btn"
+            :class="{ primary: !profile.is_following }"
+            :disabled="followBusy"
+            @click="toggleFollow"
+          >
+            {{ profile.is_following ? "已关注" : "关注" }}
+          </button>
+        </div>
         <RouterLink v-else to="/upload" class="btn primary">发布作品</RouterLink>
       </header>
 
@@ -212,6 +214,11 @@ onMounted(loadProfile);
 .who {
   flex: 1;
   min-width: 0;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
 }
 
 .who h1 {
