@@ -31,6 +31,7 @@ type CommentService struct {
 	videos    VideoReader
 	users     CommentUserReader
 	hotScores HotScoreRecorder
+	notifier  Notifier
 }
 
 func NewCommentService(
@@ -45,6 +46,10 @@ func NewCommentService(
 		users:     users,
 		hotScores: hotScores,
 	}
+}
+
+func (s *CommentService) SetNotifier(notifier Notifier) {
+	s.notifier = notifier
 }
 
 // Create 发布评论。
@@ -68,7 +73,7 @@ func (s *CommentService) Create(
 	}
 
 	// 3. 校验视频是否存在
-	_, err := s.videos.GetByID(ctx, videoID)
+	videoItem, err := s.videos.GetByID(ctx, videoID)
 	if err != nil {
 		if errors.Is(err, video.ErrNotFound) {
 			return nil, ErrInvalidTarget
@@ -87,6 +92,13 @@ func (s *CommentService) Create(
 	}
 
 	s.recordHotScore(ctx, videoID, 5)
+	if s.notifier != nil {
+		excerpt := trimmedContent
+		if runes := []rune(excerpt); len(runes) > 80 {
+			excerpt = string(runes[:80])
+		}
+		_ = s.notifier.Notify(ctx, videoItem.AuthorID, userID, NotifyComment, videoID, excerpt)
+	}
 	// 5. 返回创建后的评论
 	return comment, nil
 }

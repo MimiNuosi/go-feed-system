@@ -22,6 +22,7 @@ type FollowService struct {
 	users          UserReader
 	bigAuthorCache BigAuthorCacheInvalidator
 	logger         *slog.Logger
+	notifier       Notifier
 }
 
 const (
@@ -41,6 +42,10 @@ func NewFollowService(
 		bigAuthorCache: bigAuthorCache,
 		logger:         logger,
 	}
+}
+
+func (s *FollowService) SetNotifier(notifier Notifier) {
+	s.notifier = notifier
 }
 
 func (s *FollowService) Follow(ctx context.Context, followerID, followeeID uint64) error {
@@ -74,6 +79,9 @@ func (s *FollowService) Follow(ctx context.Context, followerID, followeeID uint6
 	}
 
 	s.invalidateBigAuthors(ctx, followerID)
+	if s.notifier != nil {
+		_ = s.notifier.Notify(ctx, followeeID, followerID, NotifyFollow, 0, "")
+	}
 	return nil
 }
 

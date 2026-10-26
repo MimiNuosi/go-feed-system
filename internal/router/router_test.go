@@ -16,6 +16,7 @@ import (
 	"go-feed-system/internal/hot"
 	"go-feed-system/internal/interaction"
 	"go-feed-system/internal/middleware"
+	"go-feed-system/internal/notification"
 	"go-feed-system/internal/user"
 	"go-feed-system/internal/video"
 	"go-feed-system/pkg/authctx"
@@ -204,6 +205,46 @@ func (f *fakeCommentRouteService) Delete(ctx context.Context, userID, commentID 
 	return nil
 }
 
+type fakeNotificationRouteService struct {
+	listCalls        int
+	unreadCountCalls int
+	markAllReadCalls int
+	lastUserID       uint64
+}
+
+func (f *fakeNotificationRouteService) List(
+	ctx context.Context,
+	userID, cursor uint64,
+	limit int,
+) (*notification.Page, error) {
+	f.listCalls++
+	f.lastUserID = userID
+	return &notification.Page{Items: []notification.Item{}}, nil
+}
+
+func (f *fakeNotificationRouteService) UnreadCount(
+	ctx context.Context,
+	userID uint64,
+) (int64, error) {
+	f.unreadCountCalls++
+	f.lastUserID = userID
+	return 2, nil
+}
+
+func (f *fakeNotificationRouteService) MarkAllRead(ctx context.Context, userID uint64) error {
+	f.markAllReadCalls++
+	f.lastUserID = userID
+	return nil
+}
+
+func (f *fakeNotificationRouteService) Subscribe(
+	userID uint64,
+) (<-chan notification.Item, func()) {
+	f.lastUserID = userID
+	ch := make(chan notification.Item)
+	return ch, func() { close(ch) }
+}
+
 type fakeFeedService struct {
 	ListFollowingFunc func(ctx context.Context, userID uint64, cursor *feed.Cursor, pageSize int) (*feed.Page, error)
 	ListLatestFunc    func(ctx context.Context, viewerID uint64, cursor *feed.Cursor, pageSize int) (*feed.Page, error)
@@ -258,6 +299,10 @@ func newTestEngine(
 		FollowHandler:          interaction.NewFollowHandler(nil, logger),
 		LikeHandler:            interaction.NewLikeHandler(likeService, logger),
 		CommentHandler:         interaction.NewCommentHandler(commentService, logger),
+		NotificationHandler: notification.NewHandler(
+			&fakeNotificationRouteService{},
+			logger,
+		),
 		HotHandler: hot.NewHandler(
 			hotService,
 			hotService,
@@ -267,6 +312,90 @@ func newTestEngine(
 			logger,
 			0, // 这组用例走完整路径，不开读模型缓存
 		),
+	})
+}
+
+func TestNotificationRoutesRequireAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	notificationService := &fakeNotificationRouteService{}
+	authMiddleware := func(c *gin.Context) {
+		ctx := authctx.WithUserID(c.Request.Context(), 7)
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+	}
+	engine := New(Dependencies{
+		Logger:                 logger,
+		HealthHandler:          health.NewHandler("test", logger),
+		AuthMiddleware:         authMiddleware,
+		OptionalAuthMiddleware: func(c *gin.Context) { c.Next() },
+		NotificationHandler:    notification.NewHandler(notificationService, logger),
+	})
+
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		wantStatus int
+		assertCall func() int
+	}{
+		{
+			name:       "通知列表",
+			method:     http.MethodGet,
+			path:       "/api/v1/notifications",
+			wantStatus: http.StatusOK,
+			assertCall: func() int { return notificationService.listCalls },
+		},
+		{
+			name:       "未读数",
+			method:     http.MethodGet,
+			path:       "/api/v1/notifications/unread-count",
+			wantStatus: http.StatusOK,
+			assertCall: func() int { return notificationService.unreadCountCalls },
+		},
+		{
+			name:       "全部已读",
+			method:     http.MethodPost,
+			path:       "/api/v1/notifications/read-all",
+			wantStatus: http.StatusNoContent,
+			assertCall: func() int { return notificationService.markAllReadCalls },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := tt.assertCall()
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, req)
+
+			if recorder.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d body=%s", recorder.Code, tt.wantStatus, recorder.Body.String())
+			}
+			if tt.assertCall() != before+1 {
+				t.Fatal("expected notification handler to be called")
+			}
+			if notificationService.lastUserID != 7 {
+				t.Fatalf("user id = %d, want 7", notificationService.lastUserID)
+			}
+		})
+	}
+
+	t.Run("没有鉴权中间件注入时返回 401", func(t *testing.T) {
+		engine := New(Dependencies{
+			Logger:              logger,
+			HealthHandler:       health.NewHandler("test", logger),
+			AuthMiddleware:      func(c *gin.Context) { c.Next() },
+			NotificationHandler: notification.NewHandler(notificationService, logger),
+		})
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/notifications", nil)
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, req)
+
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401", recorder.Code)
+		}
 	})
 }
 

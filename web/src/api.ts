@@ -98,6 +98,24 @@ export interface AuthTokens {
   refresh_expires_at: string;
 }
 
+export type NotificationKind = "like" | "comment" | "follow";
+
+export interface NotificationItem {
+  id: number;
+  actor: Author & { avatar_url?: string };
+  kind: NotificationKind;
+  video_id?: number;
+  content?: string;
+  created_at: string;
+  read: boolean;
+}
+
+export interface NotificationPage {
+  items: NotificationItem[];
+  next_cursor?: string;
+  has_more: boolean;
+}
+
 const TOKEN_KEY = "feed.token";
 const REFRESH_KEY = "feed.refresh";
 
@@ -318,6 +336,15 @@ export const api = {
   likedVideos: (cursor?: string, pageSize = 12) =>
     request<Page>(`/users/me/liked-videos?${pageQuery(pageSize, cursor)}`),
 
+  notifications: (cursor?: string, pageSize = 20) =>
+    request<NotificationPage>(`/notifications?${pageQuery(pageSize, cursor)}`),
+
+  notificationUnreadCount: () =>
+    request<{ count: number }>("/notifications/unread-count"),
+
+  markAllNotificationsRead: () =>
+    request<void>("/notifications/read-all", { method: "POST" }),
+
   uploadVideo: (form: FormData) =>
     request<{ id: number; status: string }>("/videos", {
       method: "POST",
@@ -390,4 +417,76 @@ export function uploadWithProgress(
 
 export function videoFileURL(id: number): string {
   return `/api/v1/videos/${id}/file`;
+}
+
+/**
+ * 用 fetch 消费 SSE，而不是 EventSource。
+ *
+ * EventSource 不能设置 Authorization Header；把 Bearer Token 拼进 URL
+ * 又会被 Nginx、浏览器历史和服务端访问日志记录下来。
+ */
+export async function streamNotifications(
+  onEvent: (item: NotificationItem) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  let response: Response | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const token = getToken();
+    response = await fetch("/api/v1/notifications/stream", {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      signal,
+    });
+    if (response.status !== 401 || attempt > 0 || !(await tryRefresh())) {
+      break;
+    }
+  }
+
+  if (response?.status === 401) {
+    setToken(null);
+    setRefreshToken(null);
+    window.dispatchEvent(new CustomEvent("auth:expired"));
+  }
+  if (!response || !response.ok) {
+    throw new ApiError(response?.status ?? 0, `通知连接失败（${response?.status ?? 0}）`);
+  }
+  if (!response.body) {
+    throw new ApiError(0, "当前浏览器不支持流式响应");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      return;
+    }
+    buffer += decoder.decode(value, { stream: true });
+
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const block = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf("\n\n");
+
+      let eventName = "message";
+      const dataLines: string[] = [];
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) {
+          eventName = line.slice("event:".length).trim();
+        } else if (line.startsWith("data:")) {
+          dataLines.push(line.slice("data:".length).trimStart());
+        }
+      }
+      if (eventName !== "notification" || dataLines.length === 0) {
+        continue;
+      }
+      try {
+        onEvent(JSON.parse(dataLines.join("\n")) as NotificationItem);
+      } catch {
+        // 单条坏事件不能中断整条连接，下一条通知仍应继续处理。
+      }
+    }
+  }
 }

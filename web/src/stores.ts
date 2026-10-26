@@ -75,3 +75,29 @@ export const useToastStore = defineStore("toast", {
     },
   },
 });
+
+export const useNotificationStore = defineStore("notifications", {
+  state: () => ({
+    unreadCount: 0,
+  }),
+  actions: {
+    async refreshUnread() {
+      if (!getToken()) {
+        this.unreadCount = 0;
+        return;
+      }
+      try {
+        const result = await api.notificationUnreadCount();
+        this.unreadCount = result.count;
+      } catch {
+        // 通知计数失败不能影响主页面加载，SSE 或下次进入页面会重新同步。
+      }
+    },
+    increment() {
+      this.unreadCount += 1;
+    },
+    clear() {
+      this.unreadCount = 0;
+    },
+  },
+});

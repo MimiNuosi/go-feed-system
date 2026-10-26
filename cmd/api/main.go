@@ -17,6 +17,7 @@ import (
 	"go-feed-system/internal/hot"
 	"go-feed-system/internal/interaction"
 	"go-feed-system/internal/middleware"
+	"go-feed-system/internal/notification"
 	"go-feed-system/internal/outbox"
 	"go-feed-system/internal/profile"
 	"go-feed-system/internal/router"
@@ -108,6 +109,15 @@ func run() error {
 	userService := user.NewService(userRepository, hasher, tokenManager, refreshTokenRepository, 0)
 	userHandler := user.NewHandler(userService)
 
+	notificationRepository := notification.NewGORMRepository(db)
+	notificationService := notification.NewService(
+		notificationRepository,
+		userService,
+		notification.NewHub(),
+		logger,
+	)
+	notificationHandler := notification.NewHandler(notificationService, logger)
+
 	videoStorage, err := local.NewStorage(cfg.Storage.LocalDir)
 	if err != nil {
 		return fmt.Errorf("create video storage: %w", err)
@@ -127,6 +137,7 @@ func run() error {
 		bigAuthorCache,
 		logger,
 	)
+	followService.SetNotifier(notificationService)
 	followHandler := interaction.NewFollowHandler(followService, logger)
 
 	messaging, err := newFeedMessaging(
@@ -172,6 +183,7 @@ func run() error {
 		videoService,
 		hotScoreRecorder,
 	)
+	likeService.SetNotifier(notificationService)
 	likeHandler := interaction.NewLikeHandler(likeService, logger)
 
 	profileHandler := profile.NewHandler(
@@ -200,6 +212,7 @@ func run() error {
 		userService,
 		hotScoreRecorder,
 	)
+	commentService.SetNotifier(notificationService)
 	commentHandler := interaction.NewCommentHandler(commentService, logger)
 
 	videoHandler := video.NewHandler(videoService, likeService)
@@ -282,6 +295,7 @@ func run() error {
 		ProfileHandler:         profileHandler,
 		UploadHandler:          uploadHandler,
 		CommentHandler:         commentHandler,
+		NotificationHandler:    notificationHandler,
 		FeedHandler:            feedHandler,
 		HotHandler:             hotHandler,
 	})

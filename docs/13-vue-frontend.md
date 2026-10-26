@@ -18,7 +18,7 @@
 ```text
 Vue 3 + TypeScript + Vite 7
 vue-router 4（history 模式）
-Pinia（auth / toast）
+Pinia（auth / toast / notifications）
 lucide-vue-next（图标）
 手写 CSS（不引 UI 框架）
 ```
@@ -34,6 +34,7 @@ lucide-vue-next（图标）
 | `/upload` | 发布作品（需登录） | `POST /videos`（multipart，带进度） |
 | `/me` | 我的作品（需登录） | `GET /users/me`、`GET /users/:id/videos` |
 | `/u/:id` | 用户主页 | `GET /users/:id/profile`、粉丝/关注列表、`/users/:id/videos` |
+| `/notifications` | 通知中心（需登录） | 通知列表、未读数、全部已读、SSE 在线推送 |
 | `/login`、`/register` | 登录 / 注册 | `POST /auth/login`、`POST /auth/register` |
 
 ## 关键实现
@@ -146,15 +147,47 @@ refresh 轮换：旧 refresh 再用 -> 401
 用户主页渲染出头像（无头 Chrome 截图核对）
 ```
 
+## 13.5 SSE 通知
+
+点赞、评论、关注成功后写入 `notifications`，再通过 SSE 推给在线用户。
+通知写入采用 best-effort：失败只记服务端日志，不回滚已经成功的点赞、评论或关注；
+离线时也不会丢，因为数据库记录才是事实来源，SSE 只是低延迟通道。
+
+```text
+GET  /api/v1/notifications                游标分页（id 倒序）
+GET  /api/v1/notifications/unread-count   未读数
+POST /api/v1/notifications/read-all       全部已读
+GET  /api/v1/notifications/stream         text/event-stream
+```
+
+设计要点：
+
+```text
+1. 自己操作自己不写通知
+2. Service 批量查询 actor，避免通知列表 N+1
+3. Hub 按 userID 维护单实例订阅；慢订阅者缓冲满时丢在线事件，不阻塞业务写入
+4. SSE 有空事件心跳；客户端 context.Done 时取消订阅
+5. 前端用 fetch 读流，不用 EventSource，避免把 Bearer Token 放进 URL
+6. 多实例部署时 Hub 不共享，需要 Redis Pub/Sub 或 RabbitMQ fanout 广播
+```
+
+实测：
+
+```text
+B 关注 / 点赞 / 评论 A 的视频 -> A 的 SSE 收到 3 个事件
+离线通知列表 kinds = comment,like,follow，actor.username = demoB59372
+read-all 后未读数 0；A 自己点赞自己的视频不会新增通知
+go test ./internal/notification ./internal/interaction ./internal/router 通过
+```
+
 ## 验证
 
 ```text
-npm run build                    vue-tsc 类型检查 + Vite 构建，3.46s
-产物                             108KB JS（gzip 42.5KB）+ 按页拆分 CSS
+npm run build                    vue-tsc 类型检查 + Vite 构建通过
+产物                             按页面拆包，通知页独立 chunk
 GET /、/video/1、/hot、/login     200，SPA 兜底生效
 GET /legacy                      200，旧控制台可用
 GET /api/v1/nope                 404 JSON，API 不被 SPA 吞掉
-docker compose up -d --build api 容器 healthy
 ```
 
 用无头 Chrome 截图核对过：首页（沉浸式 Feed + 右侧互动栏）、热榜、登录页均正常渲染。
@@ -162,15 +195,14 @@ docker compose up -d --build api 容器 healthy
 ## 已知局限
 
 ```text
-1. 尚未实现 Refresh Token（access token 过期需重新登录）
-2. 上传仍是整文件 multipart，分片/断点续传在 13.3
-3. 没有 SSE 通知、私信、用户主页粉丝/关注列表
-4. 前端只有类型检查和构建校验，没有组件级自动化测试
-5. dist 需要手动 npm run build 后提交（Docker 构建不拉 Node 镜像）
+1. 私信尚未实现
+2. 通知 Hub 是单实例内存广播，多实例需要共享消息总线
+3. 前端只有类型检查和构建校验，没有组件级自动化测试
+4. dist 需要手动 npm run build 后提交（Docker 构建不拉 Node 镜像）
 ```
 
 ## 下一步
 
 ```text
-13.5 SSE 通知、私信
+13.5 私信：会话列表、历史消息、发送与实时未读
 ```

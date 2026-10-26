@@ -21,6 +21,7 @@ type LikeService struct {
 	likes     LikeRepository
 	videos    VideoReader
 	hotScores HotScoreRecorder
+	notifier  Notifier
 }
 
 func NewLikeService(
@@ -35,6 +36,11 @@ func NewLikeService(
 	}
 }
 
+// SetNotifier 启用互动通知；nil 表示关闭（测试里常用）。
+func (s *LikeService) SetNotifier(notifier Notifier) {
+	s.notifier = notifier
+}
+
 func (s *LikeService) Like(ctx context.Context, userID, videoID uint64) error {
 	// 1. 校验参数
 	if userID == 0 || videoID == 0 {
@@ -42,7 +48,7 @@ func (s *LikeService) Like(ctx context.Context, userID, videoID uint64) error {
 	}
 
 	// 2. 确认视频存在
-	_, err := s.videos.GetByID(ctx, videoID)
+	videoItem, err := s.videos.GetByID(ctx, videoID)
 	if err != nil {
 		if errors.Is(err, video.ErrNotFound) {
 			return ErrInvalidTarget
@@ -64,6 +70,10 @@ func (s *LikeService) Like(ctx context.Context, userID, videoID uint64) error {
 	}
 
 	s.recordHotScore(ctx, videoID, 3)
+	if s.notifier != nil {
+		// 通知失败不能影响点赞本身，best-effort。
+		_ = s.notifier.Notify(ctx, videoItem.AuthorID, userID, NotifyLike, videoID, "")
+	}
 	return nil
 }
 

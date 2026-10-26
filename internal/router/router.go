@@ -14,6 +14,7 @@ import (
 	"go-feed-system/internal/hot"
 	"go-feed-system/internal/interaction"
 	"go-feed-system/internal/middleware"
+	"go-feed-system/internal/notification"
 	"go-feed-system/internal/profile"
 	"go-feed-system/internal/upload"
 	"go-feed-system/internal/user"
@@ -36,6 +37,7 @@ type Dependencies struct {
 	FollowHandler          *interaction.FollowHandler
 	LikeHandler            *interaction.LikeHandler
 	CommentHandler         *interaction.CommentHandler
+	NotificationHandler    *notification.Handler
 	ProfileHandler         *profile.Handler
 	UploadHandler          *upload.Handler
 	FeedHandler            *feed.Handler
@@ -184,6 +186,10 @@ func New(deps Dependencies) *gin.Engine {
 		auth.POST("/auth/logout", deps.UserHandler.Logout)
 		auth.POST("/users/me/password", deps.UserHandler.ChangePassword)
 		auth.GET("/users/me/liked-videos", deps.ProfileHandler.ListLikedVideos)
+		auth.GET("/notifications", deps.NotificationHandler.List)
+		auth.GET("/notifications/unread-count", deps.NotificationHandler.UnreadCount)
+		auth.POST("/notifications/read-all", deps.NotificationHandler.MarkAllRead)
+		auth.GET("/notifications/stream", deps.NotificationHandler.Stream)
 		auth.POST("/videos", deps.VideoHandler.Upload)
 		auth.POST("/videos/chunk/init", deps.UploadHandler.Init)
 		auth.POST("/videos/chunk/upload", deps.UploadHandler.UploadChunk)
