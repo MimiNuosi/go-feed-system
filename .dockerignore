@@ -3,6 +3,7 @@
 .cache/
 .idea/
 .vscode/
+web/node_modules/
 
 data/
 deploy/

@@ -1,8 +1,10 @@
 package router
 
 import (
+	"io/fs"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -79,12 +81,28 @@ func New(deps Dependencies) *gin.Engine {
 	engine.GET("/livez", deps.HealthHandler.Live)
 	engine.GET("/readyz", deps.HealthHandler.Ready)
 
-	// 最小前端：单文件内嵌页面，与 API 同源，所以不需要配 CORS。
-	// 生产环境通常交给 nginx / CDN，这里是为了开箱即用、方便人工验证。
+	// 前端与 API 同源，所以不需要配 CORS。
+	// dist/ 是 Vue 3 + Vite 的构建产物，用 go:embed 打进二进制。
+	dist := web.Dist()
+	indexHTML, err := fs.ReadFile(dist, "index.html")
+	if err != nil {
+		// 构建产物在编译期固定，这里失败说明发布流程坏了，尽早暴露。
+		panic("router: embedded frontend is missing index.html: " + err.Error())
+	}
+	fileServer := http.FileServer(http.FS(dist))
+
 	engine.GET("/", func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
-		c.Data(http.StatusOK, "text/html; charset=utf-8", web.IndexHTML())
+		c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML)
 	})
+
+	// 旧版单文件控制台保留为兜底入口。
+	engine.GET("/legacy", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		c.Data(http.StatusOK, "text/html; charset=utf-8", web.LegacyHTML())
+	})
+
+	engine.GET("/assets/*filepath", gin.WrapH(fileServer))
 
 	if deps.MetricsHandler != nil {
 		engine.GET("/metrics", gin.WrapH(deps.MetricsHandler))
@@ -151,6 +169,23 @@ func New(deps Dependencies) *gin.Engine {
 		// Feed 模块
 		auth.GET("/feed/following", deps.FeedHandler.ListFollowing)
 	}
+
+	// Vue 前端用 history 路由：刷新 /video/1、/login 这类地址要回退到 index.html。
+	engine.NoRoute(func(c *gin.Context) {
+		path := c.Request.URL.Path
+		if path == "/api" || strings.HasPrefix(path, "/api/") {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": gin.H{"code": "NOT_FOUND", "message": "route not found"},
+			})
+			return
+		}
+		if c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		c.Data(http.StatusOK, "text/html; charset=utf-8", indexHTML)
+	})
 
 	return engine
 }

@@ -810,7 +810,7 @@ func TestRouter_ListVideosByAuthor(t *testing.T) {
 	}
 }
 
-func TestNew_ServesEmbeddedConsole(t *testing.T) {
+func TestNew_ServesEmbeddedFrontend(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -829,8 +829,29 @@ func TestNew_ServesEmbeddedConsole(t *testing.T) {
 	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Fatalf("expected an HTML content type, got %q", ct)
 	}
+	if !strings.Contains(w.Body.String(), `id="app"`) {
+		t.Fatal("expected the embedded Vue app page")
+	}
+}
+
+func TestNew_ServesLegacyConsole(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	engine := New(Dependencies{
+		Logger:        logger,
+		HealthHandler: health.NewHandler("test", logger),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/legacy", nil)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
 	if !strings.Contains(w.Body.String(), "Feed 流控制台") {
-		t.Fatal("expected the embedded console page")
+		t.Fatal("expected the legacy console page")
 	}
 }
 

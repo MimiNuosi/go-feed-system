@@ -121,7 +121,7 @@ go:embed（内嵌控制台，免 npm 构建）
 
 ## 当前阶段
 
-阶段 12：演示手册与交付收尾（已完成）。
+阶段 13：Vue 3 前端（已完成）。
 
 已完成：
 
@@ -134,6 +134,7 @@ go:embed（内嵌控制台，免 npm 构建）
 阶段 10    vegeta 速率阶梯压测、语句级瓶颈定位与两步优化
 阶段 11    go:embed 内嵌控制台、最新频道与按作者作品页、播放量自动计数
 阶段 12    端到端走查脚本、演示手册、文档与验收项对齐代码
+阶段 13    Vue 3 + Vite 产品前端（沉浸式 Feed、热榜、详情、上传、我的）
 ```
 
 ## 项目结构
@@ -145,7 +146,9 @@ cmd/feedrebuild      Feed Inbox 重建 CLI
 
 internal/            用户、视频、互动、Feed 等业务模块
 internal/web         内嵌的最小控制台页面（go:embed 打包进二进制）
+internal/web/dist    前端构建产物（Vue 3，go:embed 打进二进制）
 pkg/                 配置、日志、数据库、Redis、RabbitMQ、指标等基础能力
+web/                 Vue 3 + TypeScript + Vite 前端源码
 migrations/          只读 SQL 迁移
 deploy/prometheus    Prometheus 配置与告警
 deploy/grafana       Grafana 数据源和 Dashboard
@@ -153,6 +156,32 @@ deploy/loadtest      vegeta 压测脚本与目标文件
 deploy/demo          端到端走查脚本（注册/上传/互动/Feed 全链路冒烟）
 docs/                分阶段设计记录与压测报告
 ```
+
+## 前端（Vue 3）
+
+浏览器打开 `http://127.0.0.1:<API_HOST_PORT>/` 看到的是 Vue 3 产品前端：
+沉浸式竖屏 Feed（首页 / 关注）、热榜、视频详情（播放 / 点赞 / 评论 / 关注）、
+发布页与「我的视频」。早期不依赖 npm 的单文件控制台保留在 `/legacy`。
+
+开发模式（Vite 代理 `/api` 到 `http://127.0.0.1:18080`）：
+
+```powershell
+cd web
+npm install
+npm run dev          # http://127.0.0.1:5173
+```
+
+构建并嵌入后端（输出到 `internal/web/dist`，再编译 Go）：
+
+```powershell
+cd web
+npm run build
+cd ..
+docker compose up -d --build api
+```
+
+前端不需要单独容器：构建产物用 `go:embed` 打进 API 二进制，和 API 同源，省掉 CORS。
+设计说明见 [docs/13](docs/13-vue-frontend.md)。
 
 ## Docker Compose 启动
 
@@ -343,3 +372,4 @@ go test -count=1 ./...
 - [阶段 10：压测与性能调优](docs/10-load-testing.md)
 - [阶段 11：最小前端控制台（人工验证）](docs/11-minimal-console.md)
 - [阶段 12：演示手册（5 分钟走完全链路）](docs/12-demo-runbook.md)
+- [阶段 13：Vue 3 前端](docs/13-vue-frontend.md)
