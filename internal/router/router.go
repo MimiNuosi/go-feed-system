@@ -14,6 +14,7 @@ import (
 	"go-feed-system/internal/interaction"
 	"go-feed-system/internal/middleware"
 	"go-feed-system/internal/profile"
+	"go-feed-system/internal/upload"
 	"go-feed-system/internal/user"
 	"go-feed-system/internal/video"
 	"go-feed-system/internal/web"
@@ -34,6 +35,7 @@ type Dependencies struct {
 	LikeHandler            *interaction.LikeHandler
 	CommentHandler         *interaction.CommentHandler
 	ProfileHandler         *profile.Handler
+	UploadHandler          *upload.Handler
 	FeedHandler            *feed.Handler
 	HotHandler             *hot.Handler
 }
@@ -176,6 +178,10 @@ func New(deps Dependencies) *gin.Engine {
 		auth.GET("/users/me", deps.UserHandler.Me)
 		auth.GET("/users/me/liked-videos", deps.ProfileHandler.ListLikedVideos)
 		auth.POST("/videos", deps.VideoHandler.Upload)
+		auth.POST("/videos/chunk/init", deps.UploadHandler.Init)
+		auth.POST("/videos/chunk/upload", deps.UploadHandler.UploadChunk)
+		auth.GET("/videos/chunk/status", deps.UploadHandler.Status)
+		auth.POST("/videos/chunk/complete", deps.UploadHandler.Complete)
 
 		// 关注模块
 		auth.POST("/users/:id/follow", deps.FollowHandler.Follow)

@@ -72,6 +72,22 @@ export interface UserList {
   has_more: boolean;
 }
 
+export interface ChunkInitResult {
+  upload_id?: string;
+  chunk_size: number;
+  total_chunks: number;
+  uploaded: number[];
+  video_id?: number;
+}
+
+export interface ChunkStatus {
+  upload_id: string;
+  status: string;
+  uploaded: number[];
+  total_chunks: number;
+  video_id?: number;
+}
+
 const TOKEN_KEY = "feed.token";
 
 export function getToken(): string | null {
@@ -222,6 +238,40 @@ export const api = {
     request<{ id: number; status: string }>("/videos", {
       method: "POST",
       body: form,
+    }),
+
+  initChunkUpload: (payload: {
+    file_name: string;
+    file_size: number;
+    file_md5: string;
+    content_type: string;
+    title: string;
+    description: string;
+    chunk_size: number;
+  }) =>
+    request<ChunkInitResult>("/videos/chunk/init", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  uploadChunk: (uploadID: string, index: number, blob: Blob) => {
+    const form = new FormData();
+    form.set("upload_id", uploadID);
+    form.set("chunk_index", String(index));
+    form.set("file", blob, `chunk-${index}.part`);
+    return request<{ received: number; total: number }>("/videos/chunk/upload", {
+      method: "POST",
+      body: form,
+    });
+  },
+
+  chunkStatus: (uploadID: string) =>
+    request<ChunkStatus>(`/videos/chunk/status?upload_id=${encodeURIComponent(uploadID)}`),
+
+  completeChunkUpload: (uploadID: string) =>
+    request<{ video_id: number }>("/videos/chunk/complete", {
+      method: "POST",
+      body: JSON.stringify({ upload_id: uploadID }),
     }),
 };
 

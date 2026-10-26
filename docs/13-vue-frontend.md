@@ -65,6 +65,55 @@ GET /api/v1/users/me/liked-videos    我赞过的视频（likes.id 倒序游标�
 迁移 `009_add_profile_indexes.sql` 补了 `(followee_id,id)`、`(follower_id,id)`、`(user_id,id)`
 三个复合索引，让列表分页不再 filesort。
 
+## 13.3 分片上传（5MB + MD5 秒传 + 断点续传）
+
+参考项目里这块是重点，实现上与 C++ 版的"按 seq 计算 offset 直接写最终文件"不同：
+Go 版把每片存成独立文件，complete 时按序合并，因此支持乱序/并发上传。
+
+接口（全部需要登录）：
+
+```text
+POST /api/v1/videos/chunk/init      创建会话；命中秒传直接返回 video_id
+POST /api/v1/videos/chunk/upload    multipart：upload_id / chunk_index / file
+GET  /api/v1/videos/chunk/status    返回已上传分片，用于断点续传
+POST /api/v1/videos/chunk/complete  校验齐全 -> 合并 -> 复用整文件上传 -> 写回 video_id
+```
+
+数据与存储：
+
+```text
+migrations/010  videos.file_md5 + (author_id, file_md5) 索引
+                upload_sessions（一次上传一行）
+                upload_chunks（主键 upload_id + chunk_index，重复上传幂等）
+临时文件        <LOCAL_STORAGE_DIR>/uploads/<upload_id>/<index>.part
+分片大小        默认 5MB，允许 1~10MB
+秒传范围        同一作者 + 同一 MD5
+断点续传        同一作者 + 同一 MD5 的 uploading 会话复用，init 返回已传分片
+```
+
+正确性校验：
+
+```text
+每片大小必须与预期一致（最后一片按 file_size 计算）
+合并时重新计算整文件 MD5，与 init 上报值不一致直接拒绝
+complete 幂等：已完成直接返回 video_id；崩溃后可凭 MD5 找回并补标
+上传目录在成功后整体清理
+```
+
+前端发布页新增「分片上传 / 普通上传」切换：`spark-md5` 计算文件 MD5（分片读取，不整文件进内存），
+init 后只上传缺失分片，3 个并发 + 每片 3 次重试，进度条展示 MD5（0-20%）、
+分片上传（20-85%）、合并（90-100%）三个阶段。
+
+实测：
+
+```text
+1.3MB 文件 / 1MB 分片 -> 2 片；init -> 传 2 片 -> status [0,1] -> complete -> video 94
+同一 MD5 再次 init -> 直接返回 video_id=94（秒传）
+只传 1 片就 complete -> 409
+中断后再次 init -> 返回同一 upload_id 与 uploaded=[0]（断点续传），补传第 2 片后 complete 成功
+go test ./internal/upload -> 通过（合并内容、MD5 传递、秒传、不完整上传）
+```
+
 ## 验证
 
 ```text
@@ -91,6 +140,6 @@ docker compose up -d --build api 容器 healthy
 ## 下一步
 
 ```text
-13.3 分片上传（init / upload / status / complete）+ MD5 秒传 + 断点续传
 13.4 Refresh Token、改密、登出、头像
+13.5 SSE 通知、私信
 ```

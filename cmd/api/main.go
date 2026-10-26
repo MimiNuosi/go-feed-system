@@ -19,6 +19,7 @@ import (
 	"go-feed-system/internal/outbox"
 	"go-feed-system/internal/profile"
 	"go-feed-system/internal/router"
+	"go-feed-system/internal/upload"
 	"go-feed-system/internal/user"
 	"go-feed-system/internal/video"
 	"go-feed-system/pkg/config"
@@ -177,6 +178,16 @@ func run() error {
 		logger,
 	)
 
+	uploadRepository := upload.NewGORMRepository(db)
+	uploadService := upload.NewService(
+		uploadRepository,
+		videoService,
+		videoRepository,
+		cfg.Storage.LocalDir,
+		logger,
+	)
+	uploadHandler := upload.NewHandler(uploadService, logger)
+
 	commentRepository := interaction.NewGORMCommentRepository(db)
 	commentService := interaction.NewCommentService(
 		commentRepository,
@@ -263,6 +274,7 @@ func run() error {
 		FollowHandler:          followHandler,
 		LikeHandler:            likeHandler,
 		ProfileHandler:         profileHandler,
+		UploadHandler:          uploadHandler,
 		CommentHandler:         commentHandler,
 		FeedHandler:            feedHandler,
 		HotHandler:             hotHandler,
