@@ -132,7 +132,7 @@ onUnmounted(() => {
           <div class="author">
             <span class="avatar">{{ video.author.username.slice(0, 1).toUpperCase() }}</span>
             <div class="who">
-              <strong>{{ video.author.username }}</strong>
+              <RouterLink :to="`/u/${video.author.id}`"><strong>{{ video.author.username }}</strong></RouterLink>
               <span class="muted">作者</span>
             </div>
             <button

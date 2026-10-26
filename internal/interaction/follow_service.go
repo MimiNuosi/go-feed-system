@@ -24,6 +24,11 @@ type FollowService struct {
 	logger         *slog.Logger
 }
 
+const (
+	DefaultProfilePageSize = 20
+	MaxProfilePageSize     = 50
+)
+
 func NewFollowService(
 	follows FollowRepository,
 	users UserReader,
@@ -106,6 +111,70 @@ func (s *FollowService) IsFollowing(ctx context.Context, followerID, followeeID 
 	}
 
 	return following, nil
+}
+
+// Counts 返回 (粉丝数, 关注数)。
+func (s *FollowService) Counts(ctx context.Context, userID uint64) (int64, int64, error) {
+	if userID == 0 {
+		return 0, 0, ErrInvalidInput
+	}
+	followers, err := s.follows.CountFollowers(ctx, userID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("count followers: %w", err)
+	}
+	following, err := s.follows.CountFollowing(ctx, userID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("count following: %w", err)
+	}
+	return followers, following, nil
+}
+
+// ListFollowers 返回一页粉丝，hasMore 由多取一条判断。
+func (s *FollowService) ListFollowers(
+	ctx context.Context,
+	userID uint64,
+	cursor uint64,
+	limit int,
+) ([]FollowEdge, bool, error) {
+	limit = normalizeProfilePageSize(limit)
+	edges, err := s.follows.ListFollowers(ctx, userID, cursor, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(edges) > limit
+	if hasMore {
+		edges = edges[:limit]
+	}
+	return edges, hasMore, nil
+}
+
+// ListFollowing 返回一页关注的人。
+func (s *FollowService) ListFollowing(
+	ctx context.Context,
+	userID uint64,
+	cursor uint64,
+	limit int,
+) ([]FollowEdge, bool, error) {
+	limit = normalizeProfilePageSize(limit)
+	edges, err := s.follows.ListFollowing(ctx, userID, cursor, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(edges) > limit
+	if hasMore {
+		edges = edges[:limit]
+	}
+	return edges, hasMore, nil
+}
+
+func normalizeProfilePageSize(limit int) int {
+	if limit <= 0 {
+		return DefaultProfilePageSize
+	}
+	if limit > MaxProfilePageSize {
+		return MaxProfilePageSize
+	}
+	return limit
 }
 
 func (s *FollowService) invalidateBigAuthors(ctx context.Context, userID uint64) {

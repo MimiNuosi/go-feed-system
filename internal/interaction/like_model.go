@@ -19,3 +19,9 @@ type Like struct {
 func (Like) TableName() string {
 	return "likes"
 }
+
+// LikeEdge 是"我赞过的视频"列表里的一行：点赞 id 用作游标。
+type LikeEdge struct {
+	CursorID uint64 `gorm:"column:cursor_id"`
+	VideoID  uint64 `gorm:"column:video_id"`
+}

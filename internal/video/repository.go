@@ -126,6 +126,19 @@ func (r *GORMRepository) ListReadyByIDs(
 	return videos, nil
 }
 
+// CountByAuthor 统计某作者已发布（ready）的作品数。
+func (r *GORMRepository) CountByAuthor(ctx context.Context, authorID uint64) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&Video{}).
+		Where("author_id = ? AND status = ?", authorID, StatusReady).
+		Count(&count).Error
+	if err != nil {
+		return 0, fmt.Errorf("count videos by author: %w", err)
+	}
+	return count, nil
+}
+
 // ListByAuthor 按作者列出视频，id 倒序（即"最新发布在前"）。
 //
 // beforeID 是游标：传 0 表示第一页；否则只取 id 小于它的记录。

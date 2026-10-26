@@ -2,7 +2,7 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { Flame, Home, Users } from "lucide-vue-next";
-import { api, type FeedItem } from "../api";
+import { api, type FeedItem, type Page } from "../api";
 import { useToastStore } from "../stores";
 import VideoCard from "../components/VideoCard.vue";
 import CommentPanel from "../components/CommentPanel.vue";
@@ -29,7 +29,8 @@ function fetchPage(reset: boolean) {
     return;
   }
   loading.value = true;
-  const loader = props.mode === "following" ? api.following : api.latest;
+  const loader: (cursor?: string, pageSize?: number) => Promise<Page> =
+    props.mode === "following" ? api.following : api.latest;
   loader(reset ? undefined : cursor.value)
     .then((page) => {
       items.value = reset ? page.items : [...items.value, ...page.items];

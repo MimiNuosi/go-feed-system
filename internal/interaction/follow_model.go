@@ -16,3 +16,10 @@ type Follow struct {
 func (Follow) TableName() string {
 	return "follows"
 }
+
+// FollowEdge 是粉丝/关注列表里的一行：关系 id 用作游标，用户信息用于展示。
+type FollowEdge struct {
+	CursorID uint64 `gorm:"column:cursor_id"`
+	UserID   uint64 `gorm:"column:user_id"`
+	Username string `gorm:"column:username"`
+}

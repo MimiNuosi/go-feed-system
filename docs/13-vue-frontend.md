@@ -33,6 +33,7 @@ lucide-vue-next（图标）
 | `/video/:id` | 视频详情 | 详情、点赞、评论、关注 |
 | `/upload` | 发布作品（需登录） | `POST /videos`（multipart，带进度） |
 | `/me` | 我的作品（需登录） | `GET /users/me`、`GET /users/:id/videos` |
+| `/u/:id` | 用户主页 | `GET /users/:id/profile`、粉丝/关注列表、`/users/:id/videos` |
 | `/login`、`/register` | 登录 / 注册 | `POST /auth/login`、`POST /auth/register` |
 
 ## 关键实现
@@ -50,6 +51,19 @@ lucide-vue-next（图标）
 **服务端托管**：`internal/web/web.go` 用 `go:embed dist` 内嵌产物；
 `internal/router/router.go` 注册 `/assets/*` 与 SPA 兜底（刷新 `/video/1`、`/login` 会回退到 `index.html`），
 `/legacy` 继续提供旧控制台。
+
+**用户主页（13.2）**：`/u/:id` 展示作品数、粉丝/关注数、获赞数，以及作品 / 粉丝 / 关注 /
+喜欢四个 Tab（"喜欢"仅自己可见）。后端新增 `internal/profile` 读模型：
+
+```text
+GET /api/v1/users/:id/profile        用户资料 + 四项计数 + is_following / is_me
+GET /api/v1/users/:id/followers      粉丝列表（follows.id 倒序游标）
+GET /api/v1/users/:id/following      关注列表（follows.id 倒序游标）
+GET /api/v1/users/me/liked-videos    我赞过的视频（likes.id 倒序游标，仅自己）
+```
+
+迁移 `009_add_profile_indexes.sql` 补了 `(followee_id,id)`、`(follower_id,id)`、`(user_id,id)`
+三个复合索引，让列表分页不再 filesort。
 
 ## 验证
 
@@ -77,7 +91,6 @@ docker compose up -d --build api 容器 healthy
 ## 下一步
 
 ```text
-13.2 用户主页统计、粉丝/关注列表、我赞过的视频
 13.3 分片上传（init / upload / status / complete）+ MD5 秒传 + 断点续传
 13.4 Refresh Token、改密、登出、头像
 ```

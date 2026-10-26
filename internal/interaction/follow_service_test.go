@@ -84,6 +84,24 @@ func (f *fakeFollowRepository) ListFollowerIDs(
 	return []uint64{}, nil
 }
 
+func (f *fakeFollowRepository) ListFollowers(
+	ctx context.Context,
+	userID uint64,
+	beforeID uint64,
+	limit int,
+) ([]FollowEdge, error) {
+	return []FollowEdge{}, nil
+}
+
+func (f *fakeFollowRepository) ListFollowing(
+	ctx context.Context,
+	userID uint64,
+	beforeID uint64,
+	limit int,
+) ([]FollowEdge, error) {
+	return []FollowEdge{}, nil
+}
+
 // 3. 表驱动测试
 func TestFollowService_Follow(t *testing.T) {
 	tests := []struct {

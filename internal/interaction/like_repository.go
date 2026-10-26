@@ -38,6 +38,12 @@ type LikeRepository interface {
 
 	// 批量查询：一次查出当前用户给哪些视频点过赞
 	LikedVideoIDsByUser(ctx context.Context, userID uint64, videoIDs []uint64) (map[uint64]bool, error)
+
+	// ListLikedVideoEdges 返回某用户点赞过的视频，按点赞 id 倒序游标分页。
+	ListLikedVideoEdges(ctx context.Context, userID uint64, beforeID uint64, limit int) ([]LikeEdge, error)
+
+	// CountLikesReceivedByAuthor 统计某作者所有视频收到的点赞总数。
+	CountLikesReceivedByAuthor(ctx context.Context, authorID uint64) (int64, error)
 }
 
 type GORMLikeRepository struct {
@@ -160,4 +166,44 @@ func (r *GORMLikeRepository) LikedVideoIDsByUser(ctx context.Context, userID uin
 		likedMap[id] = true
 	}
 	return likedMap, nil
+}
+
+// ListLikedVideoEdges 返回一页"我赞过的视频"，游标是 likes.id。
+func (r *GORMLikeRepository) ListLikedVideoEdges(
+	ctx context.Context,
+	userID uint64,
+	beforeID uint64,
+	limit int,
+) ([]LikeEdge, error) {
+	if limit <= 0 {
+		return []LikeEdge{}, nil
+	}
+
+	query := r.db.WithContext(ctx).
+		Table("likes").
+		Select("id AS cursor_id, video_id AS video_id").
+		Where("user_id = ?", userID)
+	if beforeID > 0 {
+		query = query.Where("id < ?", beforeID)
+	}
+
+	var edges []LikeEdge
+	if err := query.Order("id DESC").Limit(limit).Scan(&edges).Error; err != nil {
+		return nil, fmt.Errorf("list liked video edges: %w", err)
+	}
+	return edges, nil
+}
+
+// CountLikesReceivedByAuthor 统计作者所有作品收到的点赞数。
+func (r *GORMLikeRepository) CountLikesReceivedByAuthor(ctx context.Context, authorID uint64) (int64, error) {
+	var count int64
+	err := r.db.WithContext(ctx).
+		Table("likes AS l").
+		Joins("JOIN videos AS v ON v.id = l.video_id").
+		Where("v.author_id = ?", authorID).
+		Count(&count).Error
+	if err != nil {
+		return 0, fmt.Errorf("count likes received by author: %w", err)
+	}
+	return count, nil
 }

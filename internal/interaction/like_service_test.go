@@ -76,6 +76,22 @@ func (f *fakeLikeRepository) CountByVideoID(ctx context.Context, videoID uint64)
 	return 0, nil
 }
 
+func (f *fakeLikeRepository) ListLikedVideoEdges(
+	ctx context.Context,
+	userID uint64,
+	beforeID uint64,
+	limit int,
+) ([]LikeEdge, error) {
+	return []LikeEdge{}, nil
+}
+
+func (f *fakeLikeRepository) CountLikesReceivedByAuthor(
+	ctx context.Context,
+	authorID uint64,
+) (int64, error) {
+	return 0, nil
+}
+
 func (f *fakeLikeRepository) CountByVideoIDs(ctx context.Context, videoIDs []uint64) (map[uint64]int64, error) {
 	f.CountByVideoIDsCallCount++
 	f.LastCountVideoIDs = videoIDs

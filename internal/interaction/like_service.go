@@ -92,6 +92,36 @@ func (s *LikeService) recordHotScore(ctx context.Context, videoID uint64, delta 
 	s.hotScores.AddScore(ctx, videoID, delta, time.Now())
 }
 
+// ListLikedVideoEdges 返回一页"我赞过的视频"，按点赞时间倒序。
+func (s *LikeService) ListLikedVideoEdges(
+	ctx context.Context,
+	userID uint64,
+	cursor uint64,
+	limit int,
+) ([]LikeEdge, bool, error) {
+	if userID == 0 {
+		return nil, false, ErrInvalidInput
+	}
+	limit = normalizeProfilePageSize(limit)
+	edges, err := s.likes.ListLikedVideoEdges(ctx, userID, cursor, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(edges) > limit
+	if hasMore {
+		edges = edges[:limit]
+	}
+	return edges, hasMore, nil
+}
+
+// CountLikesReceivedByAuthor 返回作者所有作品收到的点赞数。
+func (s *LikeService) CountLikesReceivedByAuthor(ctx context.Context, authorID uint64) (int64, error) {
+	if authorID == 0 {
+		return 0, ErrInvalidInput
+	}
+	return s.likes.CountLikesReceivedByAuthor(ctx, authorID)
+}
+
 // LikeState 是视频详情和 Feed 展示需要的组合状态。
 type LikeState struct {
 	Count     int64

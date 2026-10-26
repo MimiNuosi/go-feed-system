@@ -13,6 +13,7 @@ import (
 	"go-feed-system/internal/hot"
 	"go-feed-system/internal/interaction"
 	"go-feed-system/internal/middleware"
+	"go-feed-system/internal/profile"
 	"go-feed-system/internal/user"
 	"go-feed-system/internal/video"
 	"go-feed-system/internal/web"
@@ -32,6 +33,7 @@ type Dependencies struct {
 	FollowHandler          *interaction.FollowHandler
 	LikeHandler            *interaction.LikeHandler
 	CommentHandler         *interaction.CommentHandler
+	ProfileHandler         *profile.Handler
 	FeedHandler            *feed.Handler
 	HotHandler             *hot.Handler
 }
@@ -127,6 +129,25 @@ func New(deps Dependencies) *gin.Engine {
 		identityRateLimit,
 		deps.VideoHandler.ListByAuthor,
 	)
+	// 用户主页：聚合资料、粉丝/关注列表（公开可读）。
+	v1.GET(
+		"/users/:id/profile",
+		deps.OptionalAuthMiddleware,
+		identityRateLimit,
+		deps.ProfileHandler.GetProfile,
+	)
+	v1.GET(
+		"/users/:id/followers",
+		deps.OptionalAuthMiddleware,
+		identityRateLimit,
+		deps.ProfileHandler.ListFollowers,
+	)
+	v1.GET(
+		"/users/:id/following",
+		deps.OptionalAuthMiddleware,
+		identityRateLimit,
+		deps.ProfileHandler.ListFollowing,
+	)
 	v1.POST(
 		"/videos/:id/view",
 		deps.OptionalAuthMiddleware,
@@ -153,6 +174,7 @@ func New(deps Dependencies) *gin.Engine {
 	auth.Use(identityRateLimit)   // 身份限流必须在鉴权之后
 	{
 		auth.GET("/users/me", deps.UserHandler.Me)
+		auth.GET("/users/me/liked-videos", deps.ProfileHandler.ListLikedVideos)
 		auth.POST("/videos", deps.VideoHandler.Upload)
 
 		// 关注模块

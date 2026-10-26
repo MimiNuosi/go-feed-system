@@ -56,6 +56,22 @@ export interface User {
   created_at: string;
 }
 
+export interface Profile {
+  user: Author;
+  followers: number;
+  following: number;
+  videos: number;
+  likes_received: number;
+  is_following: boolean;
+  is_me: boolean;
+}
+
+export interface UserList {
+  items: Author[];
+  next_cursor?: string;
+  has_more: boolean;
+}
+
 const TOKEN_KEY = "feed.token";
 
 export function getToken(): string | null {
@@ -190,6 +206,17 @@ export const api = {
     }
     return request<Page>(`/users/${userId}/videos?${params.toString()}`);
   },
+
+  profile: (userId: number) => request<Profile>(`/users/${userId}/profile`),
+
+  userFollowers: (userId: number, cursor?: string, pageSize = 20) =>
+    request<UserList>(`/users/${userId}/followers?${pageQuery(pageSize, cursor)}`),
+
+  userFollowing: (userId: number, cursor?: string, pageSize = 20) =>
+    request<UserList>(`/users/${userId}/following?${pageQuery(pageSize, cursor)}`),
+
+  likedVideos: (cursor?: string, pageSize = 12) =>
+    request<Page>(`/users/me/liked-videos?${pageQuery(pageSize, cursor)}`),
 
   uploadVideo: (form: FormData) =>
     request<{ id: number; status: string }>("/videos", {

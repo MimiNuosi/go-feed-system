@@ -153,7 +153,7 @@ onUnmounted(clearViewTimer);
     <div class="info">
       <div class="author">
         <span class="avatar">{{ authorInitial }}</span>
-        <span class="username">@{{ item.author.username }}</span>
+        <RouterLink :to="`/u/${item.author.id}`" class="username">@{{ item.author.username }}</RouterLink>
       </div>
       <h2 class="title">{{ item.title }}</h2>
       <p v-if="item.description" class="desc">{{ item.description }}</p>

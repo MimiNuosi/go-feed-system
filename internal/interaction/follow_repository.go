@@ -15,6 +15,9 @@ type FollowRepository interface {
 	CountFollowers(ctx context.Context, userID uint64) (int64, error)
 	CountFollowing(ctx context.Context, userID uint64) (int64, error)
 	ListFollowerIDs(ctx context.Context, followeeID uint64, afterID uint64, limit int) ([]uint64, error)
+	// ListFollowers / ListFollowing 用于用户主页的列表页，按 follows.id 倒序游标分页。
+	ListFollowers(ctx context.Context, userID uint64, beforeID uint64, limit int) ([]FollowEdge, error)
+	ListFollowing(ctx context.Context, userID uint64, beforeID uint64, limit int) ([]FollowEdge, error)
 }
 
 type GORMFollowRepository struct {
@@ -118,4 +121,58 @@ func (r *GORMFollowRepository) ListFollowerIDs(ctx context.Context, followeeID u
 	}
 
 	return followerIDs, nil
+}
+
+// ListFollowers 返回关注了 userID 的人（最新关注在前）。
+func (r *GORMFollowRepository) ListFollowers(
+	ctx context.Context,
+	userID uint64,
+	beforeID uint64,
+	limit int,
+) ([]FollowEdge, error) {
+	if limit <= 0 {
+		return []FollowEdge{}, nil
+	}
+
+	query := r.db.WithContext(ctx).
+		Table("follows AS f").
+		Select("f.id AS cursor_id, u.id AS user_id, u.username AS username").
+		Joins("JOIN users AS u ON u.id = f.follower_id").
+		Where("f.followee_id = ?", userID)
+	if beforeID > 0 {
+		query = query.Where("f.id < ?", beforeID)
+	}
+
+	var edges []FollowEdge
+	if err := query.Order("f.id DESC").Limit(limit).Scan(&edges).Error; err != nil {
+		return nil, fmt.Errorf("list followers: %w", err)
+	}
+	return edges, nil
+}
+
+// ListFollowing 返回 userID 关注的人（最新关注在前）。
+func (r *GORMFollowRepository) ListFollowing(
+	ctx context.Context,
+	userID uint64,
+	beforeID uint64,
+	limit int,
+) ([]FollowEdge, error) {
+	if limit <= 0 {
+		return []FollowEdge{}, nil
+	}
+
+	query := r.db.WithContext(ctx).
+		Table("follows AS f").
+		Select("f.id AS cursor_id, u.id AS user_id, u.username AS username").
+		Joins("JOIN users AS u ON u.id = f.followee_id").
+		Where("f.follower_id = ?", userID)
+	if beforeID > 0 {
+		query = query.Where("f.id < ?", beforeID)
+	}
+
+	var edges []FollowEdge
+	if err := query.Order("f.id DESC").Limit(limit).Scan(&edges).Error; err != nil {
+		return nil, fmt.Errorf("list following: %w", err)
+	}
+	return edges, nil
 }
