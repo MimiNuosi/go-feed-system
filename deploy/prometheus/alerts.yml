@@ -51,6 +51,33 @@ groups:
           summary: Outbox published state update failed
           description: At least one event was published to RabbitMQ but could not be marked published in MySQL.
 
+      - alert: RealtimeSubscriberDisconnected
+        expr: max(realtime_subscriber_connected) == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Realtime Redis subscriber is disconnected
+          description: The API has had no active realtime Redis subscription for 5 minutes.
+
+      - alert: RealtimePublishFailures
+        expr: sum(increase(realtime_publish_total{result!="success"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Realtime event publishing is failing
+          description: At least one realtime notification or message event failed to publish in the last 5 minutes.
+
+      - alert: RealtimeHandlerErrors
+        expr: sum(increase(realtime_receive_total{result=~"decode_error|invalid|channel_mismatch|handler_error"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Realtime events are failing processing
+          description: Realtime events were rejected or failed in a local handler during the last 5 minutes.
+
       - alert: DLQMessagesDetected
         expr: sum(increase(feed_consumer_dlq_total[5m])) > 0
         for: 1m

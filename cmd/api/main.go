@@ -21,6 +21,7 @@ import (
 	"go-feed-system/internal/notification"
 	"go-feed-system/internal/outbox"
 	"go-feed-system/internal/profile"
+	"go-feed-system/internal/realtime"
 	"go-feed-system/internal/router"
 	"go-feed-system/internal/upload"
 	"go-feed-system/internal/user"
@@ -111,22 +112,34 @@ func run() error {
 	userHandler := user.NewHandler(userService)
 
 	notificationRepository := notification.NewGORMRepository(db)
+	notificationHub := notification.NewHub()
+	realtimePublisher := realtime.NewRedisPublisher(redisClient, appMetrics)
 	notificationService := notification.NewService(
 		notificationRepository,
 		userService,
-		notification.NewHub(),
+		notificationHub,
+		realtimePublisher,
 		logger,
 	)
 	notificationHandler := notification.NewHandler(notificationService, logger)
 
 	messageRepository := message.NewGORMRepository(db)
+	messageHub := message.NewHub()
 	messageService := message.NewService(
 		messageRepository,
 		userService,
-		message.NewHub(),
+		messageHub,
+		realtimePublisher,
 		logger,
 	)
 	messageHandler := message.NewHandler(messageService, logger)
+	realtimeSubscriber := newRealtimeSubscriber(
+		redisClient,
+		logger,
+		appMetrics,
+		notificationHub,
+		messageHub,
+	)
 
 	videoStorage, err := local.NewStorage(cfg.Storage.LocalDir)
 	if err != nil {
@@ -352,9 +365,15 @@ func run() error {
 		viewWritebackErrCh <- viewWritebackWorker.Run(runCtx)
 	}()
 
+	realtimeErrCh := make(chan error, 1)
+	go func() {
+		realtimeErrCh <- realtimeSubscriber.Run(runCtx)
+	}()
+
 	var runErr error
 	messagingDone := false
 	viewWritebackDone := false
+	realtimeDone := false
 
 	select {
 	case err := <-serverErrCh:
@@ -374,6 +393,13 @@ func run() error {
 			runErr = fmt.Errorf("view writeback worker stopped: %w", err)
 		} else {
 			runErr = errors.New("view writeback worker stopped unexpectedly")
+		}
+	case err := <-realtimeErrCh:
+		realtimeDone = true
+		if err != nil {
+			runErr = fmt.Errorf("realtime subscriber stopped: %w", err)
+		} else {
+			runErr = errors.New("realtime subscriber stopped unexpectedly")
 		}
 	case <-ctx.Done():
 		// 恢复第二次 Ctrl+C 的默认强制退出行为。
@@ -423,6 +449,25 @@ func run() error {
 		case <-workerStopCtx.Done():
 			if runErr == nil {
 				runErr = fmt.Errorf("stop view writeback worker: %w", workerStopCtx.Err())
+			}
+		}
+	}
+
+	if !realtimeDone {
+		realtimeStopCtx, cancelRealtimeStop := context.WithTimeout(
+			context.Background(),
+			cfg.HTTP.ShutdownTimeout,
+		)
+		defer cancelRealtimeStop()
+
+		select {
+		case err := <-realtimeErrCh:
+			if err != nil && runErr == nil {
+				runErr = fmt.Errorf("stop realtime subscriber: %w", err)
+			}
+		case <-realtimeStopCtx.Done():
+			if runErr == nil {
+				runErr = fmt.Errorf("stop realtime subscriber: %w", realtimeStopCtx.Err())
 			}
 		}
 	}

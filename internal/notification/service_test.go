@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"go-feed-system/internal/realtime"
 	"go-feed-system/internal/user"
 )
 
@@ -61,6 +62,16 @@ func (f *fakeRepository) MarkAllRead(ctx context.Context, userID uint64) error {
 type fakeUserReader struct {
 	getByIDsFunc func(ctx context.Context, ids []uint64) (map[uint64]*user.User, error)
 	lastIDs      []uint64
+}
+
+type fakeRealtimePublisher struct {
+	events []realtime.Envelope
+	err    error
+}
+
+func (p *fakeRealtimePublisher) Publish(ctx context.Context, event realtime.Envelope) error {
+	p.events = append(p.events, event)
+	return p.err
 }
 
 func (f *fakeUserReader) GetByIDs(ctx context.Context, ids []uint64) (map[uint64]*user.User, error) {
@@ -126,7 +137,7 @@ func TestServiceNotify(t *testing.T) {
 				},
 			}
 			hub := NewHub()
-			service := NewService(repo, users, hub, newNotificationDiscardLogger())
+			service := NewService(repo, users, hub, nil, newNotificationDiscardLogger())
 
 			var events <-chan Item
 			if tt.wantBroadcast {
@@ -198,7 +209,7 @@ func TestServiceList(t *testing.T) {
 			}, nil
 		},
 	}
-	service := NewService(repo, users, NewHub(), newNotificationDiscardLogger())
+	service := NewService(repo, users, NewHub(), nil, newNotificationDiscardLogger())
 
 	page, err := service.List(context.Background(), 99, 30, DefaultPageSize)
 	if err != nil {
@@ -226,6 +237,70 @@ func TestServiceList(t *testing.T) {
 	}
 }
 
+func TestServiceNotifyPublishesToRealtime(t *testing.T) {
+	tests := []struct {
+		name              string
+		publishErr        error
+		wantLocalFallback bool
+	}{
+		{
+			name: "发布成功由订阅端投递本地 Hub",
+		},
+		{
+			name:              "发布失败降级到本地 Hub",
+			publishErr:        errors.New("redis down"),
+			wantLocalFallback: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeRepository{
+				createFunc: func(ctx context.Context, item *Notification) error {
+					item.ID = 42
+					return nil
+				},
+			}
+			users := &fakeUserReader{
+				getByIDsFunc: func(ctx context.Context, ids []uint64) (map[uint64]*user.User, error) {
+					return map[uint64]*user.User{
+						1: {ID: 1, Username: "alice"},
+					}, nil
+				},
+			}
+			hub := NewHub()
+			events, cancel := hub.Subscribe(2)
+			defer cancel()
+			publisher := &fakeRealtimePublisher{err: tt.publishErr}
+			service := NewService(repo, users, hub, publisher, newNotificationDiscardLogger())
+
+			if err := service.Notify(context.Background(), 2, 1, "like", 7, ""); err != nil {
+				t.Fatalf("Notify() error = %v", err)
+			}
+			if len(publisher.events) != 1 {
+				t.Fatalf("published events = %d, want 1", len(publisher.events))
+			}
+			if publisher.events[0].Type != realtime.EventNotificationCreated {
+				t.Fatalf("event type = %s", publisher.events[0].Type)
+			}
+
+			select {
+			case item := <-events:
+				if !tt.wantLocalFallback {
+					t.Fatal("publish success must not also broadcast locally")
+				}
+				if item.UserID != 2 {
+					t.Fatalf("fallback item user = %d, want 2", item.UserID)
+				}
+			default:
+				if tt.wantLocalFallback {
+					t.Fatal("expected local Hub fallback")
+				}
+			}
+		})
+	}
+}
+
 func TestServiceListUserLookupError(t *testing.T) {
 	repo := &fakeRepository{
 		listByUserFunc: func(
@@ -241,7 +316,7 @@ func TestServiceListUserLookupError(t *testing.T) {
 			return nil, errors.New("user db down")
 		},
 	}
-	service := NewService(repo, users, NewHub(), newNotificationDiscardLogger())
+	service := NewService(repo, users, NewHub(), nil, newNotificationDiscardLogger())
 
 	if _, err := service.List(context.Background(), 2, 0, 20); err == nil {
 		t.Fatal("expected user lookup error")

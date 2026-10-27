@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"go-feed-system/internal/realtime"
 	"go-feed-system/internal/user"
 )
 
@@ -16,21 +17,34 @@ const (
 )
 
 type Service struct {
-	repo   Repository
-	users  UserReader
-	hub    *Hub
-	logger *slog.Logger
+	repo      Repository
+	users     UserReader
+	hub       *Hub
+	publisher realtime.Publisher
+	logger    *slog.Logger
 }
 
 type UserReader interface {
 	GetByIDs(ctx context.Context, ids []uint64) (map[uint64]*user.User, error)
 }
 
-func NewService(repo Repository, users UserReader, hub *Hub, logger *slog.Logger) *Service {
+func NewService(
+	repo Repository,
+	users UserReader,
+	hub *Hub,
+	publisher realtime.Publisher,
+	logger *slog.Logger,
+) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{repo: repo, users: users, hub: hub, logger: logger}
+	return &Service{
+		repo:      repo,
+		users:     users,
+		hub:       hub,
+		publisher: publisher,
+		logger:    logger,
+	}
 }
 
 // Notify 写入通知并推送给在线订阅者；自己操作自己不通知。
@@ -67,7 +81,7 @@ func (s *Service) Notify(
 		)
 		return err
 	}
-	if s.hub != nil {
+	if s.hub != nil || s.publisher != nil {
 		event, err := s.toItem(ctx, *item)
 		if err != nil {
 			// 通知已经落库，在线推送只是加速通道；补操作者信息失败时降级推送。
@@ -79,9 +93,41 @@ func (s *Service) Notify(
 			)
 			event = itemFromRecord(*item, nil)
 		}
-		s.hub.Broadcast(event)
+		s.publishOrBroadcast(ctx, event)
 	}
 	return nil
+}
+
+func (s *Service) publishOrBroadcast(ctx context.Context, item Item) {
+	if s.publisher == nil {
+		if s.hub != nil {
+			s.hub.Broadcast(item)
+		}
+		return
+	}
+
+	envelope, err := realtime.NewEnvelope(
+		realtime.EventNotificationCreated,
+		item.UserID,
+		item,
+	)
+	if err == nil {
+		err = s.publisher.Publish(ctx, envelope)
+	}
+	if err == nil {
+		return
+	}
+
+	// Redis 发布失败时退回本实例 Hub，远端实例靠数据库页面补查。
+	s.logger.Warn(
+		"publish realtime notification",
+		"notification_id", item.ID,
+		"recipient_id", item.UserID,
+		"error", err,
+	)
+	if s.hub != nil {
+		s.hub.Broadcast(item)
+	}
 }
 
 func (s *Service) List(

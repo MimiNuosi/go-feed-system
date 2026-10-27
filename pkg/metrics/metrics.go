@@ -27,6 +27,11 @@ type Metrics struct {
 
 	outboxPublish *prometheus.CounterVec
 	viewWriteback *prometheus.CounterVec
+
+	realtimePublish    *prometheus.CounterVec
+	realtimeReceive    *prometheus.CounterVec
+	realtimeReconnect  *prometheus.CounterVec
+	realtimeSubscriber prometheus.Gauge
 }
 
 func New() *Metrics {
@@ -95,6 +100,33 @@ func New() *Metrics {
 		},
 		[]string{"result"},
 	)
+	realtimePublish := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "realtime_publish_total",
+			Help: "Total number of realtime publish attempts by channel and result.",
+		},
+		[]string{"channel", "result"},
+	)
+	realtimeReceive := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "realtime_receive_total",
+			Help: "Total number of realtime receive attempts by channel and result.",
+		},
+		[]string{"channel", "result"},
+	)
+	realtimeReconnect := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "realtime_subscriber_reconnect_total",
+			Help: "Total number of realtime subscriber reconnect events.",
+		},
+		[]string{"result"},
+	)
+	realtimeSubscriber := prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "realtime_subscriber_connected",
+			Help: "Whether the realtime Redis subscriber currently has an active subscription.",
+		},
+	)
 
 	registry.MustRegister(
 		httpInFlight,
@@ -106,20 +138,29 @@ func New() *Metrics {
 		consumerDLQ,
 		outboxPublish,
 		viewWriteback,
+		realtimePublish,
+		realtimeReceive,
+		realtimeReconnect,
+		realtimeSubscriber,
 	)
 	consumerConnected.Set(0)
+	realtimeSubscriber.Set(0)
 
 	return &Metrics{
-		registry:          registry,
-		httpInFlight:      httpInFlight,
-		httpRequests:      httpRequests,
-		httpDuration:      httpDuration,
-		httpRateLimited:   httpRateLimited,
-		consumerReconnect: consumerReconnect,
-		consumerConnected: consumerConnected,
-		consumerDLQ:       consumerDLQ,
-		outboxPublish:     outboxPublish,
-		viewWriteback:     viewWriteback,
+		registry:           registry,
+		httpInFlight:       httpInFlight,
+		httpRequests:       httpRequests,
+		httpDuration:       httpDuration,
+		httpRateLimited:    httpRateLimited,
+		consumerReconnect:  consumerReconnect,
+		consumerConnected:  consumerConnected,
+		consumerDLQ:        consumerDLQ,
+		outboxPublish:      outboxPublish,
+		viewWriteback:      viewWriteback,
+		realtimePublish:    realtimePublish,
+		realtimeReceive:    realtimeReceive,
+		realtimeReconnect:  realtimeReconnect,
+		realtimeSubscriber: realtimeSubscriber,
 	}
 }
 
@@ -172,4 +213,24 @@ func (m *Metrics) IncRateLimited(scope string) {
 
 func (m *Metrics) IncViewWriteback(result string) {
 	m.viewWriteback.WithLabelValues(result).Inc()
+}
+
+func (m *Metrics) IncRealtimePublish(channel string, result string) {
+	m.realtimePublish.WithLabelValues(channel, result).Inc()
+}
+
+func (m *Metrics) IncRealtimeReceive(channel string, result string) {
+	m.realtimeReceive.WithLabelValues(channel, result).Inc()
+}
+
+func (m *Metrics) IncRealtimeReconnect(result string) {
+	m.realtimeReconnect.WithLabelValues(result).Inc()
+}
+
+func (m *Metrics) SetRealtimeSubscriberConnected(connected bool) {
+	if connected {
+		m.realtimeSubscriber.Set(1)
+		return
+	}
+	m.realtimeSubscriber.Set(0)
 }

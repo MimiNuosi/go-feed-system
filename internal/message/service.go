@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"go-feed-system/internal/realtime"
 	"go-feed-system/internal/user"
 )
 
@@ -19,17 +20,30 @@ type UserReader interface {
 }
 
 type Service struct {
-	repo   Repository
-	users  UserReader
-	hub    *Hub
-	logger *slog.Logger
+	repo      Repository
+	users     UserReader
+	hub       *Hub
+	publisher realtime.Publisher
+	logger    *slog.Logger
 }
 
-func NewService(repo Repository, users UserReader, hub *Hub, logger *slog.Logger) *Service {
+func NewService(
+	repo Repository,
+	users UserReader,
+	hub *Hub,
+	publisher realtime.Publisher,
+	logger *slog.Logger,
+) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{repo: repo, users: users, hub: hub, logger: logger}
+	return &Service{
+		repo:      repo,
+		users:     users,
+		hub:       hub,
+		publisher: publisher,
+		logger:    logger,
+	}
 }
 
 func (s *Service) Send(
@@ -64,10 +78,40 @@ func (s *Service) Send(
 	}
 
 	response := itemFromModel(*item)
-	if s.hub != nil {
-		s.hub.Broadcast(response)
-	}
+	s.publishOrBroadcast(ctx, response)
 	return &response, nil
+}
+
+func (s *Service) publishOrBroadcast(ctx context.Context, item Item) {
+	if s.publisher == nil {
+		if s.hub != nil {
+			s.hub.Broadcast(item)
+		}
+		return
+	}
+
+	envelope, err := realtime.NewEnvelope(
+		realtime.EventMessageCreated,
+		item.ReceiverID,
+		item,
+	)
+	if err == nil {
+		err = s.publisher.Publish(ctx, envelope)
+	}
+	if err == nil {
+		return
+	}
+
+	// Redis 发布失败时退回本实例 Hub，远端实例靠数据库页面补查。
+	s.logger.Warn(
+		"publish realtime message",
+		"message_id", item.ID,
+		"receiver_id", item.ReceiverID,
+		"error", err,
+	)
+	if s.hub != nil {
+		s.hub.Broadcast(item)
+	}
 }
 
 // List 返回从旧到新的消息页；next_cursor 是本页最旧一条消息的 ID。

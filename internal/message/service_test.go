@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"go-feed-system/internal/realtime"
 	"go-feed-system/internal/user"
 )
 
@@ -92,6 +93,16 @@ type fakeUserReader struct {
 	getByIDFunc  func(ctx context.Context, id uint64) (*user.User, error)
 	getByIDsFunc func(ctx context.Context, ids []uint64) (map[uint64]*user.User, error)
 	lastIDs      []uint64
+}
+
+type fakeRealtimePublisher struct {
+	events []realtime.Envelope
+	err    error
+}
+
+func (p *fakeRealtimePublisher) Publish(ctx context.Context, event realtime.Envelope) error {
+	p.events = append(p.events, event)
+	return p.err
 }
 
 func (f *fakeUserReader) GetByID(ctx context.Context, id uint64) (*user.User, error) {
@@ -189,7 +200,7 @@ func TestServiceSend(t *testing.T) {
 				},
 			}
 			hub := NewHub()
-			service := NewService(repo, users, hub, newMessageDiscardLogger())
+			service := NewService(repo, users, hub, nil, newMessageDiscardLogger())
 			var events <-chan Item
 			if tt.wantBroadcast {
 				events, _ = hub.Subscribe(tt.receiverID)
@@ -238,7 +249,7 @@ func TestServiceList(t *testing.T) {
 			}, nil
 		},
 	}
-	service := NewService(repo, &fakeUserReader{}, NewHub(), newMessageDiscardLogger())
+	service := NewService(repo, &fakeUserReader{}, NewHub(), nil, newMessageDiscardLogger())
 
 	page, err := service.List(context.Background(), 1, 2, 10, 2)
 	if err != nil {
@@ -252,6 +263,68 @@ func TestServiceList(t *testing.T) {
 	}
 	if len(page.Items) != 2 || page.Items[0].ID != 3 || page.Items[1].ID != 4 {
 		t.Fatalf("items are not oldest-to-newest: %+v", page.Items)
+	}
+}
+
+func TestServiceSendPublishesToRealtime(t *testing.T) {
+	tests := []struct {
+		name              string
+		publishErr        error
+		wantLocalFallback bool
+	}{
+		{
+			name: "发布成功",
+		},
+		{
+			name:              "发布失败降级本地",
+			publishErr:        errors.New("redis down"),
+			wantLocalFallback: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeRepository{
+				createFunc: func(ctx context.Context, item *Message) error {
+					item.ID = 9
+					return nil
+				},
+			}
+			hub := NewHub()
+			events, cancel := hub.Subscribe(2)
+			defer cancel()
+			publisher := &fakeRealtimePublisher{err: tt.publishErr}
+			service := NewService(
+				repo,
+				&fakeUserReader{},
+				hub,
+				publisher,
+				newMessageDiscardLogger(),
+			)
+
+			if _, err := service.Send(context.Background(), 1, 2, "hello"); err != nil {
+				t.Fatalf("Send() error = %v", err)
+			}
+			if len(publisher.events) != 1 {
+				t.Fatalf("published events = %d, want 1", len(publisher.events))
+			}
+			if publisher.events[0].Type != realtime.EventMessageCreated {
+				t.Fatalf("event type = %s", publisher.events[0].Type)
+			}
+			select {
+			case item := <-events:
+				if !tt.wantLocalFallback {
+					t.Fatal("publish success must not also broadcast locally")
+				}
+				if item.ReceiverID != 2 {
+					t.Fatalf("fallback receiver = %d, want 2", item.ReceiverID)
+				}
+			default:
+				if tt.wantLocalFallback {
+					t.Fatal("expected local Hub fallback")
+				}
+			}
+		})
 	}
 }
 
@@ -280,7 +353,7 @@ func TestServiceListConversations(t *testing.T) {
 			}, nil
 		},
 	}
-	service := NewService(repo, users, NewHub(), newMessageDiscardLogger())
+	service := NewService(repo, users, NewHub(), nil, newMessageDiscardLogger())
 
 	list, err := service.ListConversations(context.Background(), 1)
 	if err != nil {
@@ -302,7 +375,7 @@ func TestServiceListConversations(t *testing.T) {
 
 func TestServiceMarkConversationRead(t *testing.T) {
 	repo := &fakeRepository{}
-	service := NewService(repo, &fakeUserReader{}, NewHub(), newMessageDiscardLogger())
+	service := NewService(repo, &fakeUserReader{}, NewHub(), nil, newMessageDiscardLogger())
 
 	if err := service.MarkConversationRead(context.Background(), 1, 2); err != nil {
 		t.Fatalf("MarkConversationRead() error = %v", err)
