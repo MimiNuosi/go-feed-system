@@ -7,7 +7,7 @@
 ```text
 14.1 Redis Pub/Sub 共享通知和私信 SSE
 14.2 Docker Compose 多 API 实例与 Nginx
-14.3 故障切换与代理边界验证
+14.3 Nginx 故障切换与 SSE 重连
 14.4 Redis 分布式令牌桶限流
 14.5 多实例集成测试、压测与故障演练
 ```
@@ -176,17 +176,70 @@ Prometheus targets
   浏览器仍收到 follow 通知
 ```
 
+## 14.3 Nginx 故障切换与 SSE 重连（已完成）
+
+### 发现的问题
+
+最初 Nginx 使用静态上游：
+
+```text
+server api-1:8080;
+server api-2:8080;
+```
+
+停止 `api-2` 后，Docker DNS 中不再存在该名称。运行中的 Nginx 仍保留旧地址，
+但执行 `nginx -t` 或 reload 会因为 `host not found in upstream` 失败。
+
+同时，第一次故障请求等待了 5 秒代理连接超时，虽然最终能够切换，但用户体验不好。
+
+### 修复
+
+```text
+resolver 127.0.0.11 valid=5s
+server api-1:8080 resolve
+server api-2:8080 resolve
+proxy_connect_timeout 1s
+proxy_next_upstream_tries 2
+proxy_next_upstream_timeout 3s
+```
+
+这样单副本不存在时：
+
+```text
+Nginx 配置仍可检查和 reload
+请求快速转到存活副本
+容器恢复后由 DNS 重新发现并自动重新加入
+```
+
+### 验证结果
+
+```text
+停止 api-2
+  20/20 请求返回 200
+  全部 upstream 指向 api-1
+
+启动 api-2，等待 12 秒
+  20/20 请求返回 200
+  请求在 api-1 和 api-2 之间交替
+
+浏览器 SSE 场景
+  先停止 api-2，确保 SSE 连接 api-1
+  启动 api-2 后停止 api-1
+  前端 3 秒退避后自动连接 api-2
+  新关注通知到达浏览器，通知徽标从 0 变为 1
+```
+
 ## 当前局限
 
 ```text
 1. 限流仍是进程内额度，多实例后总容量会翻倍
 2. Outbox 和浏览量回写 Worker 仍可能在多个实例同时运行，需要选主、分片或同等幂等约束
 3. Redis 是实时通道的共享依赖，但 MySQL 数据不依赖 Redis Pub/Sub
-4. 当前固定两个 API 服务，动态扩缩容和容器发现留到后续验证
+4. 当前固定两个 API 服务，还没有自动扩缩容
 ```
 
 ## 下一步
 
 ```text
-14.3 Nginx 故障切换、SSE 重连和多实例边界验证
+14.4 Redis 分布式令牌桶限流
 ```
