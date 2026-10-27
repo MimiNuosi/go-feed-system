@@ -189,7 +189,13 @@ watch(
       <div class="sidebar-foot">
         <template v-if="auth.user">
           <div class="me">
-            <span class="avatar">{{ userInitial }}</span>
+            <img
+              v-if="auth.user.avatar_url"
+              :src="auth.user.avatar_url"
+              :alt="`${auth.user.username} 的头像`"
+              class="avatar"
+            />
+            <span v-else class="avatar fallback">{{ userInitial }}</span>
             <span class="name">{{ auth.user.username }}</span>
           </div>
           <RouterLink to="/settings" class="btn ghost">
@@ -318,7 +324,12 @@ watch(
 .avatar {
   width: 30px;
   height: 30px;
+  flex: 0 0 30px;
   border-radius: 50%;
+  object-fit: cover;
+}
+
+.avatar.fallback {
   background: var(--accent);
   color: #fff;
   display: grid;
