@@ -268,6 +268,7 @@ func run() error {
 	// 额度本身来自配置，压测时可以临时放开。
 	globalRateLimit, identityRateLimit, err := newRateLimitHandlers(
 		cfg.RateLimit,
+		redisClient,
 		appMetrics,
 		logger,
 	)

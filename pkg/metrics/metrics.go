@@ -32,6 +32,8 @@ type Metrics struct {
 	realtimeReceive    *prometheus.CounterVec
 	realtimeReconnect  *prometheus.CounterVec
 	realtimeSubscriber prometheus.Gauge
+
+	rateLimitBackend *prometheus.CounterVec
 }
 
 func New() *Metrics {
@@ -127,6 +129,13 @@ func New() *Metrics {
 			Help: "Whether the realtime Redis subscriber currently has an active subscription.",
 		},
 	)
+	rateLimitBackend := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "rate_limit_backend_total",
+			Help: "Total number of rate limit decisions by backend and result.",
+		},
+		[]string{"backend", "result"},
+	)
 
 	registry.MustRegister(
 		httpInFlight,
@@ -142,6 +151,7 @@ func New() *Metrics {
 		realtimeReceive,
 		realtimeReconnect,
 		realtimeSubscriber,
+		rateLimitBackend,
 	)
 	consumerConnected.Set(0)
 	realtimeSubscriber.Set(0)
@@ -161,6 +171,7 @@ func New() *Metrics {
 		realtimeReceive:    realtimeReceive,
 		realtimeReconnect:  realtimeReconnect,
 		realtimeSubscriber: realtimeSubscriber,
+		rateLimitBackend:   rateLimitBackend,
 	}
 }
 
@@ -233,4 +244,8 @@ func (m *Metrics) SetRealtimeSubscriberConnected(connected bool) {
 		return
 	}
 	m.realtimeSubscriber.Set(0)
+}
+
+func (m *Metrics) IncRateLimitBackend(backend string, result string) {
+	m.rateLimitBackend.WithLabelValues(backend, result).Inc()
 }

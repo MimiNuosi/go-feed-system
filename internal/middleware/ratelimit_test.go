@@ -1,7 +1,9 @@
 package middleware
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,11 +22,38 @@ type fakeLimiter struct {
 	allow      bool
 	retryAfter time.Duration
 	keys       []string
+	err        error
 }
 
-func (f *fakeLimiter) Allow(key string) bool {
+func (f *fakeLimiter) Allow(ctx context.Context, key string) (bool, error) {
 	f.keys = append(f.keys, key)
-	return f.allow
+	return f.allow, f.err
+}
+
+func TestRateLimit_LimiterErrorFailsOpen(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handlerCalled := false
+	engine := gin.New()
+	engine.Use(RateLimit(RateLimitOptions{
+		Scope: "global",
+		Limiter: &fakeLimiter{
+			err: errors.New("redis unavailable"),
+		},
+		KeyFunc: GlobalKey,
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}))
+	engine.GET("/business", func(c *gin.Context) {
+		handlerCalled = true
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/business", nil)
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK || !handlerCalled {
+		t.Fatalf("expected fail-open 200, got status=%d called=%v", recorder.Code, handlerCalled)
+	}
 }
 
 func (f *fakeLimiter) RetryAfter() time.Duration {

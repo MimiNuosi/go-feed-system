@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"log/slog"
 	"math"
 	"net/http"
@@ -17,7 +18,7 @@ import (
 
 // Limiter 是限流中间件依赖的最小能力。
 type Limiter interface {
-	Allow(key string) bool
+	Allow(ctx context.Context, key string) (bool, error)
 	RetryAfter() time.Duration
 }
 
@@ -81,7 +82,19 @@ func RateLimit(options RateLimitOptions) gin.HandlerFunc {
 			return
 		}
 
-		if options.Limiter.Allow(key) {
+		allowed, err := options.Limiter.Allow(c.Request.Context(), key)
+		if err != nil {
+			logger.Error(
+				"rate limiter failed",
+				"request_id", requestid.FromContext(c.Request.Context()),
+				"scope", options.Scope,
+				"error", err,
+			)
+			// 限流器故障时 fail-open，避免 Redis 故障放大成 API 全面不可用。
+			c.Next()
+			return
+		}
+		if allowed {
 			c.Next()
 			return
 		}

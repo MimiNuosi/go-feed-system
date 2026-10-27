@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -117,7 +118,11 @@ func TestKeyedLimiter_Allow(t *testing.T) {
 
 			for i, s := range tt.steps {
 				clock.Advance(s.advance)
-				if got := limiter.Allow(s.key); got != s.want {
+				got, err := limiter.Allow(context.Background(), s.key)
+				if err != nil {
+					t.Fatalf("step %d: Allow error: %v", i, err)
+				}
+				if got != s.want {
 					t.Fatalf(
 						"step %d (key=%q, advance=%s): Allow = %v, want %v",
 						i, s.key, s.advance, got, s.want,
@@ -133,7 +138,11 @@ func TestKeyedLimiter_ReclaimsIdleBuckets(t *testing.T) {
 	limiter, clock := newTestLimiter(t, Config{Burst: 10, Interval: time.Second})
 
 	for _, key := range []string{"a", "b", "c"} {
-		if !limiter.Allow(key) {
+		allowed, err := limiter.Allow(context.Background(), key)
+		if err != nil {
+			t.Fatalf("Allow(%q) error: %v", key, err)
+		}
+		if !allowed {
 			t.Fatalf("expected key %q to be allowed", key)
 		}
 	}
@@ -143,7 +152,11 @@ func TestKeyedLimiter_ReclaimsIdleBuckets(t *testing.T) {
 
 	// 还没超过 idleTTL：只补一次清扫机会，老桶应该留下。
 	clock.Advance(5 * time.Minute)
-	if !limiter.Allow("d") {
+	allowed, err := limiter.Allow(context.Background(), "d")
+	if err != nil {
+		t.Fatalf("Allow(d) error: %v", err)
+	}
+	if !allowed {
 		t.Fatal("expected key d to be allowed")
 	}
 	if got := limiter.Size(); got != 4 {
@@ -152,7 +165,11 @@ func TestKeyedLimiter_ReclaimsIdleBuckets(t *testing.T) {
 
 	// 超过 idleTTL 后再来一次请求会触发清扫，老桶被回收。
 	clock.Advance(11 * time.Minute)
-	if !limiter.Allow("e") {
+	allowed, err = limiter.Allow(context.Background(), "e")
+	if err != nil {
+		t.Fatalf("Allow(e) error: %v", err)
+	}
+	if !allowed {
 		t.Fatal("expected key e to be allowed")
 	}
 	if got := limiter.Size(); got != 1 {
@@ -170,9 +187,9 @@ func TestKeyedLimiter_AllowIsConcurrencySafe(t *testing.T) {
 	limiter, _ := newTestLimiter(t, Config{Burst: burst, Interval: time.Second})
 
 	var (
-		wg      sync.WaitGroup
-		mu      sync.Mutex
-		allowed int
+		wg           sync.WaitGroup
+		mu           sync.Mutex
+		allowedCount int
 	)
 
 	for i := 0; i < goroutines; i++ {
@@ -180,9 +197,14 @@ func TestKeyedLimiter_AllowIsConcurrencySafe(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < callsEach; j++ {
-				if limiter.Allow("same-key") {
+				permitted, err := limiter.Allow(context.Background(), "same-key")
+				if err != nil {
+					t.Errorf("Allow error: %v", err)
+					return
+				}
+				if permitted {
 					mu.Lock()
-					allowed++
+					allowedCount++
 					mu.Unlock()
 				}
 			}
@@ -191,7 +213,7 @@ func TestKeyedLimiter_AllowIsConcurrencySafe(t *testing.T) {
 	wg.Wait()
 
 	// 时钟是冻结的，不会补充任何令牌，放行数必须正好等于桶容量。
-	if allowed != burst {
-		t.Fatalf("expected exactly %d allowed, got %d", burst, allowed)
+	if allowedCount != burst {
+		t.Fatalf("expected exactly %d allowed, got %d", burst, allowedCount)
 	}
 }

@@ -38,6 +38,7 @@ OutboxMarkPublishedFailures
 RealtimeSubscriberDisconnected
 RealtimePublishFailures
 RealtimeHandlerErrors
+RateLimitRedisFallback
 DLQMessagesDetected
 HighHTTP5xxRate
 HighHTTPP95Latency

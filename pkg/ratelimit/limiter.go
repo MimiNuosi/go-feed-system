@@ -8,6 +8,7 @@
 package ratelimit
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -99,9 +100,12 @@ func (l *KeyedLimiter) Size() int {
 //
 // 空 key 一律放行：调用方（中间件）已经决定"没有身份维度就跳过这一层"，
 // 这里再兜一次底，避免把所有人算成同一个身份。
-func (l *KeyedLimiter) Allow(key string) bool {
+func (l *KeyedLimiter) Allow(ctx context.Context, key string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if key == "" {
-		return true
+		return true, nil
 	}
 
 	now := l.now()
@@ -142,9 +146,9 @@ func (l *KeyedLimiter) Allow(key string) bool {
 	// ========== 步骤 5：够一个就扣 ==========
 	if b.tokens >= 1 {
 		b.tokens -= 1
-		return true
+		return true, nil
 	}
-	return false
+	return false, nil
 }
 
 // sweepLocked 回收长期空闲的桶。调用方必须持有锁。

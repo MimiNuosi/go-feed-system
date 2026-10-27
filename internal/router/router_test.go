@@ -1181,9 +1181,9 @@ type alwaysDenyLimiter struct {
 	calls int
 }
 
-func (l *alwaysDenyLimiter) Allow(key string) bool {
+func (l *alwaysDenyLimiter) Allow(ctx context.Context, key string) (bool, error) {
 	l.calls++
-	return false
+	return false, nil
 }
 
 func (l *alwaysDenyLimiter) RetryAfter() time.Duration {
@@ -1252,9 +1252,9 @@ type recordingDenyLimiter struct {
 	keys []string
 }
 
-func (l *recordingDenyLimiter) Allow(key string) bool {
+func (l *recordingDenyLimiter) Allow(ctx context.Context, key string) (bool, error) {
 	l.keys = append(l.keys, key)
-	return false
+	return false, nil
 }
 
 func (l *recordingDenyLimiter) RetryAfter() time.Duration {

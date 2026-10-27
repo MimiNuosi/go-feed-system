@@ -54,6 +54,7 @@ func TestNewRateLimitHandlers(t *testing.T) {
 			global, identity, err := newRateLimitHandlers(
 				tt.cfg,
 				nil,
+				nil,
 				newSupervisorTestLogger(),
 			)
 

@@ -229,17 +229,94 @@ Nginx 配置仍可检查和 reload
   新关注通知到达浏览器，通知徽标从 0 变为 1
 ```
 
+## 14.4 Redis 分布式令牌桶限流（已完成）
+
+### 问题
+
+本地令牌桶放在每个 API 进程内：
+
+```text
+api-1 2000 个突发令牌
+api-2 2000 个突发令牌
+集群理论突发额度 = 4000
+```
+
+实例越多，总限额越偏离配置。
+
+### Redis Lua 算法
+
+每个桶只在 Redis 中保存：
+
+```text
+tokens       当前令牌数
+last_refill  上次补算时间（微秒）
+```
+
+每次请求由单个 Lua 脚本原子完成：
+
+```text
+读取 tokens / last_refill
+-> 按 elapsed / interval 补令牌
+-> clamp 到 burst
+-> tokens >= 1 时扣减
+-> 写回状态并续 10 分钟 TTL
+```
+
+Lua 在 Redis 单线程内执行，所以两个 API 同时扣同一个桶不会超发。
+
+Key 格式：
+
+```text
+rate_limit:global:global
+rate_limit:identity:user:<id>
+```
+
+### Redis 故障时怎么办
+
+限流不能让 Redis 成为“宕机后全站拒绝”的单点。每个 Redis 限流器内部保留本地桶：
+
+```text
+Redis 正常 -> 全局精确额度
+Redis 异常 -> 自动降级到本地桶，保证服务仍可用
+```
+
+降级次数写入：
+
+```text
+rate_limit_backend_total{backend="local",result="allow|deny"}
+rate_limit_backend_total{backend="redis",result="allow|deny|error"}
+```
+
+同时配置 `RateLimitRedisFallback` 告警。降级期间额度重新变成“每实例一份”，
+这是可用性优先的有意取舍。
+
+### 验证结果
+
+```text
+两个 RedisKeyedLimiter 共用同一 namespace
+  前 3 个请求允许，第 4 个拒绝
+
+通过 Nginx 发送 10 个请求
+  请求交替落在 api-1 / api-2
+  前 5 个返回 200
+  后 5 个返回 429
+
+Redis
+  keyspace 中只有一个 rate_limit:global:global
+  tokens 接近 0
+  剩余 TTL 正常
+```
+
 ## 当前局限
 
 ```text
-1. 限流仍是进程内额度，多实例后总容量会翻倍
-2. Outbox 和浏览量回写 Worker 仍可能在多个实例同时运行，需要选主、分片或同等幂等约束
-3. Redis 是实时通道的共享依赖，但 MySQL 数据不依赖 Redis Pub/Sub
-4. 当前固定两个 API 服务，还没有自动扩缩容
+1. Outbox 和浏览量回写 Worker 仍可能在多个实例同时运行，需要选主、分片或同等幂等约束
+2. Redis 是实时通道和共享限流额度的依赖，但 MySQL 数据不依赖 Redis
+3. 当前固定两个 API 服务，还没有自动扩缩容
 ```
 
 ## 下一步
 
 ```text
-14.4 Redis 分布式令牌桶限流
+14.5 多实例压测、长时间稳定性与最终验收
 ```
