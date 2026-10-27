@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -58,6 +59,7 @@ type HTTPConfig struct {
 	Addr              string
 	ReadHeaderTimeout time.Duration
 	ShutdownTimeout   time.Duration
+	TrustedProxies    []string
 }
 
 type MySQLConfig struct {
@@ -172,6 +174,7 @@ func Load() (Config, error) {
 			Addr:              envOrDefault("HTTP_ADDR", defaultHTTPAddr),
 			ReadHeaderTimeout: defaultReadHeaderTimeout,
 			ShutdownTimeout:   defaultShutdownTimeout,
+			TrustedProxies:    csvFromEnv("HTTP_TRUSTED_PROXIES"),
 		},
 		MySQL: MySQLConfig{
 			DSN:             strings.TrimSpace(os.Getenv("MYSQL_DSN")),
@@ -250,6 +253,13 @@ func (c Config) validate() error {
 	}
 	if c.HTTP.ShutdownTimeout <= 0 {
 		return fmt.Errorf("HTTP shutdown timeout must be positive")
+	}
+	for _, proxy := range c.HTTP.TrustedProxies {
+		if net.ParseIP(proxy) == nil {
+			if _, _, err := net.ParseCIDR(proxy); err != nil {
+				return fmt.Errorf("invalid HTTP trusted proxy %q", proxy)
+			}
+		}
 	}
 	if strings.TrimSpace(c.MySQL.DSN) == "" {
 		return fmt.Errorf("MYSQL_DSN must not be empty")
@@ -358,6 +368,22 @@ func envOrDefaultInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func csvFromEnv(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		value := strings.TrimSpace(part)
+		if value != "" {
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func durationFromEnv(key string, fallback time.Duration) (time.Duration, error) {

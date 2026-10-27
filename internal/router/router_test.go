@@ -1047,6 +1047,33 @@ func TestNew_IgnoresForwardedFor(t *testing.T) {
 	}
 }
 
+func TestNew_TrustsConfiguredProxyForwardedFor(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	noop := func(c *gin.Context) { c.Next() }
+
+	engine := New(Dependencies{
+		Logger:                 logger,
+		HealthHandler:          health.NewHandler("test", logger),
+		AuthMiddleware:         noop,
+		OptionalAuthMiddleware: noop,
+		TrustedProxies:         []string{"172.16.0.0/12"},
+	})
+	engine.GET("/__probe/client-ip", func(c *gin.Context) {
+		c.String(http.StatusOK, c.ClientIP())
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__probe/client-ip", nil)
+	req.RemoteAddr = "172.18.0.5:12345"
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+
+	if got := w.Body.String(); got != "1.2.3.4" {
+		t.Fatalf("expected forwarded client IP, got %q", got)
+	}
+}
+
 // alwaysDenyLimiter 模拟额度已经用光。
 // TestNew_ServesEmbeddedConsole 验证内嵌的最小前端能从根路径打开。
 // TestRouter_ListVideosByAuthor 验证 /users/:id/videos 这条路由确实挂上了。

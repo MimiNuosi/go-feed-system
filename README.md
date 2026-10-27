@@ -22,6 +22,7 @@ SSE 通知与私信、Feed 流与热榜，并把异步解耦、缓存一致性�
 ## 架构与请求链路
 
 ```text
+入口层     Nginx：唯一宿主机入口、least_conn、SSE 关闭代理缓冲
 HTTP 层    Gin：RequestID → AccessLog → Metrics → Recovery → RateLimit → 路由
 业务层     Handler（参数校验、DTO）→ Service（业务规则、聚合）
 数据层     Repository（GORM / Redis / 对象存储），接口定义在使用方
@@ -100,11 +101,11 @@ GET /api/v1/videos/1（优化后）     4000 rps   1.4~2.1ms  2.4~6.0ms 每请�
 3. 限流是进程内的，水平扩展后集群总额度会变成实例数的倍数
 4. 热榜第 1 段读取会把同一分数的成员整段读回，长尾数据下应改为 ZRANK + 限量 ZRANGE
 5. 视频只做容器级校验（ftyp/EBML），没有转码与编码级校验
-6. 未做真正的多实例部署验证（负载均衡、会话一致性）
+6. 多实例已能运行，但尚未完成长时间压测、副本故障演练和自动扩缩容
 7. 热榜读模型缓存有 1 秒陈旧窗口：热门视频的点赞数最多滞后 1 秒才更新
 8. 内嵌控制台是单文件内联脚本、没有 CSP，只用于人工验证；生产环境应交给
    nginx/CDN 与独立前端工程
-9. 通知与私信 SSE Hub 是单实例内存订阅，多实例部署需要 Redis Pub/Sub 或 RabbitMQ fanout
+9. 两个 API 实例仍会各自运行 Outbox 和浏览量回写 Worker，需要后续增加选主或责任分片
 ```
 
 ## 技术栈
@@ -140,6 +141,7 @@ go:embed（内嵌控制台，免 npm 构建）
 阶段 12    端到端走查脚本、演示手册、文档与验收项对齐代码
 阶段 13    Vue 3 产品前端、用户主页、分片上传、双令牌、通知与私信
 阶段 14.1  Redis Pub/Sub 共享通知和私信 SSE
+阶段 14.2  双 API 实例、Nginx 负载均衡、真实客户端 IP 与稳定双副本监控
 ```
 
 ## 项目结构
@@ -157,6 +159,7 @@ web/                 Vue 3 + TypeScript + Vite 前端源码
 migrations/          只读 SQL 迁移
 deploy/prometheus    Prometheus 配置与告警
 deploy/grafana       Grafana 数据源和 Dashboard
+deploy/nginx         Nginx 多实例入口与 SSE 代理配置
 deploy/loadtest      vegeta 压测脚本与目标文件
 deploy/demo          端到端走查脚本（注册/上传/互动/Feed 全链路冒烟）
 docs/                分阶段设计记录与压测报告
@@ -185,7 +188,7 @@ npm run dev          # http://127.0.0.1:5173
 cd web
 npm run build
 cd ..
-docker compose up -d --build api
+docker compose up -d --build
 ```
 
 前端不需要单独容器：构建产物用 `go:embed` 打进 API 二进制，和 API 同源，省掉 CORS。
@@ -225,7 +228,7 @@ docker compose up -d --build
 默认端口：
 
 ```text
-API         8080
+Nginx API   8080
 MySQL       3308
 Redis       6380
 RabbitMQ    5672
@@ -235,7 +238,8 @@ Grafana     3000
 ```
 
 浏览器打开 `http://127.0.0.1:<API_HOST_PORT>/` 就能看到 Vue 3 产品前端；
-后端 API、SSE 和前端构建产物由同一个 Go 服务同源提供。旧控制台仍保留在
+Nginx 将请求分发到两个 API 副本，后端 API、SSE 和前端构建产物仍保持同源。
+旧控制台保留在
 `/legacy`，用于零依赖人工兜底，见 [docs/11](docs/11-minimal-console.md)。
 
 如果宿主机端口已被占用，可以临时覆盖：

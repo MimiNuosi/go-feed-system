@@ -29,6 +29,7 @@ type Dependencies struct {
 	MetricsHandler         http.Handler
 	GlobalRateLimit        gin.HandlerFunc
 	IdentityRateLimit      gin.HandlerFunc
+	TrustedProxies         []string
 	HealthHandler          *health.Handler
 	AvatarHandler          *avatar.Handler
 	UserHandler            *user.Handler
@@ -54,17 +55,9 @@ func New(deps Dependencies) *gin.Engine {
 	engine := gin.New()
 	engine.HandleMethodNotAllowed = true
 
-	// 不信任任何代理转发的客户端 IP。
-	//
-	// X-Forwarded-For 是客户端可以随意伪造的头部，而 gin 默认信任全部代理，
-	// 等于让客户端自己申报 IP。当前部署里客户端经 Docker 端口映射进来，
-	// 容器看到的对端固定是网桥网关地址，一旦把私有网段填进可信列表，
-	// 就等于把不可信的客户端当成了可信代理。
-	//
-	// 等以后真的在前面部署受控网关（并且 api 不再直接暴露端口）时，
-	// 再把网关地址填进来，并确认网关是覆盖而不是追加 XFF。
-	// nil 不会返回 error：只有传入非法 CIDR 才会失败。
-	_ = engine.SetTrustedProxies(nil)
+	// 默认不信任任何代理；多实例部署时只信任明确配置的 Nginx 网段。
+	// 配置为空时 nil 等价于“不信任任何 XFF”。
+	_ = engine.SetTrustedProxies(deps.TrustedProxies)
 
 	engine.Use(middleware.RequestID(deps.Logger))
 	engine.Use(middleware.AccessLog(deps.Logger))

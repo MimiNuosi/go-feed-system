@@ -9,7 +9,7 @@
 go install github.com/tsenart/vegeta/v12@latest
 
 # 2. 压测基线要放开限流，否则测到的是限流器的天花板而不是系统能力
-$env:RATE_LIMIT_ENABLED='false'; docker compose up -d api
+$env:RATE_LIMIT_ENABLED='false'; docker compose up -d --no-deps --force-recreate api-1 api-2
 ```
 
 ## 两个脚本

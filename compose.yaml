@@ -1,5 +1,40 @@
 name: go-feed-system
 
+x-api-common: &api-common
+  build:
+    context: .
+  image: go-feed-system-api:local
+  restart: unless-stopped
+  env_file:
+    - .env
+  environment:
+    HTTP_ADDR: 0.0.0.0:8080
+    # interpolateParams=true：参数在客户端做转义，一条查询只发一次 COM_QUERY，
+    # 省掉 prepared statement 的 PREPARE + EXECUTE 两次往返。
+    # 前提是 DSN 里必须指定 charset（多字节字符集下客户端转义才安全）。
+    MYSQL_DSN: ${MYSQL_USER:-feed_app}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE:-go_feed_system}?charset=utf8mb4&parseTime=True&loc=Local&interpolateParams=true
+    REDIS_ADDR: redis:6379
+    REDIS_PASSWORD: ${REDIS_PASSWORD}
+    RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-feed_app}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672/
+    LOCAL_STORAGE_DIR: /data/videos
+    HTTP_TRUSTED_PROXIES: ${HTTP_TRUSTED_PROXIES:-172.16.0.0/12}
+    RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+    RATE_LIMIT_GLOBAL_BURST: ${RATE_LIMIT_GLOBAL_BURST:-2000}
+    RATE_LIMIT_GLOBAL_INTERVAL: ${RATE_LIMIT_GLOBAL_INTERVAL:-1ms}
+    RATE_LIMIT_IDENTITY_BURST: ${RATE_LIMIT_IDENTITY_BURST:-480}
+    RATE_LIMIT_IDENTITY_INTERVAL: ${RATE_LIMIT_IDENTITY_INTERVAL:-250ms}
+  depends_on:
+    mysql:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+  expose:
+    - "8080"
+  volumes:
+    - video_data:/data/videos
+
 services:
   mysql:
     image: mysql:8.4
@@ -71,47 +106,40 @@ services:
       retries: 12
       start_period: 30s
 
-  api:
-    build:
-      context: .
-    image: go-feed-system-api:local
+  api-1:
+    <<: *api-common
+
+  api-2:
+    <<: *api-common
+
+  nginx:
+    image: nginx:1.27-alpine
     restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      HTTP_ADDR: 0.0.0.0:8080
-      # interpolateParams=true：参数在客户端做转义，一条查询只发一次 COM_QUERY，
-      # 省掉 prepared statement 的 PREPARE + EXECUTE 两次往返。
-      # 前提是 DSN 里必须指定 charset（多字节字符集下客户端转义才安全）。
-      MYSQL_DSN: ${MYSQL_USER:-feed_app}:${MYSQL_PASSWORD}@tcp(mysql:3306)/${MYSQL_DATABASE:-go_feed_system}?charset=utf8mb4&parseTime=True&loc=Local&interpolateParams=true
-      REDIS_ADDR: redis:6379
-      REDIS_PASSWORD: ${REDIS_PASSWORD}
-      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER:-feed_app}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672/
-      LOCAL_STORAGE_DIR: /data/videos
-      # 限流额度支持从宿主环境覆盖，压测时不用改文件：
-      #   $env:RATE_LIMIT_ENABLED='false'; docker compose up -d api
-      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
-      RATE_LIMIT_GLOBAL_BURST: ${RATE_LIMIT_GLOBAL_BURST:-2000}
-      RATE_LIMIT_GLOBAL_INTERVAL: ${RATE_LIMIT_GLOBAL_INTERVAL:-1ms}
-      RATE_LIMIT_IDENTITY_BURST: ${RATE_LIMIT_IDENTITY_BURST:-480}
-      RATE_LIMIT_IDENTITY_INTERVAL: ${RATE_LIMIT_IDENTITY_INTERVAL:-250ms}
     depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
+      api-1:
+        condition: service_started
+      api-2:
+        condition: service_started
     ports:
-      - "${API_HOST_PORT:-8080}:8080"
+      - "${API_HOST_PORT:-8080}:80"
     volumes:
-      - video_data:/data/videos
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O - http://127.0.0.1/livez >/dev/null || exit 1
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   prometheus:
     image: prom/prometheus:v3.5.0
     restart: unless-stopped
     depends_on:
-      api:
+      api-1:
+        condition: service_started
+      api-2:
         condition: service_started
     command:
       - --config.file=/etc/prometheus/prometheus.yml

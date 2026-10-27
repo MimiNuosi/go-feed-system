@@ -281,6 +281,7 @@ func run() error {
 		MetricsHandler:    appMetrics.Handler(),
 		GlobalRateLimit:   globalRateLimit,
 		IdentityRateLimit: identityRateLimit,
+		TrustedProxies:    cfg.HTTP.TrustedProxies,
 		HealthHandler: health.NewHandler(
 			version,
 			logger,

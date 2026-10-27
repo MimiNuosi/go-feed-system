@@ -6,7 +6,7 @@
 这份手册有两个用途：面试演示前 5 分钟自检环境；把 README 里的性能与
 设计说法变成当场可复现的证据。
 
-前提只有一个：`docker compose up -d --build` 起完七个容器，控制台在
+前提只有一个：`docker compose up -d --build` 起完八个容器（含两个 API 与 Nginx），控制台在
 `http://127.0.0.1:<API_HOST_PORT>/`（默认端口见 README）。
 
 ## 路线 A：命令行走查（推荐先跑）

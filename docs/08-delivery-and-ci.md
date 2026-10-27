@@ -59,7 +59,7 @@ grafana
 - [x] Redis 使用密码并持久化数据。
 - [x] RabbitMQ 开启管理插件。
 - [x] API 通过环境变量读取全部配置。
-- [x] Prometheus 抓取 `api:8080/metrics`。
+- [x] Prometheus 分别抓取 `api-1:8080/metrics`、`api-2:8080/metrics`。
 - [x] Grafana 自动加载阶段 7 的 provisioning 和 Dashboard。
 - [x] 为关键依赖配置 healthcheck。
 - [x] 使用 `depends_on` 控制启动顺序，但仍由应用自行处理短暂依赖故障。
@@ -69,7 +69,8 @@ grafana
 `127.0.0.1:8080`，面向 Windows 本机运行。Docker Compose 中需要改为：
 
 ```text
-api:8080
+api-1:8080
+api-2:8080
 ```
 
 Grafana 数据源已经使用：
@@ -153,7 +154,7 @@ Redis 少的那 2 个键是带 TTL 的去重键自然过期，不是丢数据。
 `docker compose down -v` 会连 volume 一起删，那才是真的清库。
 
 **这些是怎么验的**：前六条在本地 Docker Desktop（WSL2 后端）上按 README 的
-《Docker Compose 启动》实跑过一遍：`docker compose up -d --build` 起 7 个容器，
+《Docker Compose 启动》实跑过一遍：`docker compose up -d --build` 起 8 个容器，
 探针与 `/metrics` 返回 200，Prometheus 抓取目标 `health=up`，Grafana 自动加载
 `Go Feed System` Dashboard；"RabbitMQ 不可用时仍可启动"这条是在阶段 7 验证的
 （停掉 RabbitMQ 后 `/livez` 正常、`/readyz` 返回 degraded，见

@@ -169,7 +169,7 @@ GET  /api/v1/notifications/stream         text/event-stream
 3. Hub 按 userID 维护单实例订阅；慢订阅者缓冲满时丢在线事件，不阻塞业务写入
 4. SSE 有空事件心跳；客户端 context.Done 时取消订阅
 5. 前端用 fetch 读流，不用 EventSource，避免把 Bearer Token 放进 URL
-6. 多实例部署时 Hub 不共享，需要 Redis Pub/Sub 或 RabbitMQ fanout 广播
+6. 多实例部署由阶段 14 的 Redis Pub/Sub 负责跨实例广播，本地 Hub 只保存当前实例连接
 ```
 
 实测：
@@ -233,9 +233,8 @@ GET /api/v1/nope                 404 JSON，API 不被 SPA 吞掉
 ## 已知局限
 
 ```text
-1. 通知与私信 Hub 都是单实例内存广播，多实例需要 Redis Pub/Sub 或 RabbitMQ fanout
-2. 前端只有类型检查、构建校验和截图冒烟，没有组件级自动化测试
-3. dist 需要手动 npm run build 后提交（Docker 构建不拉 Node 镜像）
+1. 前端只有类型检查、构建校验和截图冒烟，没有组件级自动化测试
+2. dist 需要手动 npm run build 后提交（Docker 构建不拉 Node 镜像）
 ```
 
 ## 下一步

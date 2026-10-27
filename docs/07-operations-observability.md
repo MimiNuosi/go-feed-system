@@ -176,7 +176,7 @@ cmd/api             -> consumerSupervisorMetrics
 MySQL      3308
 Redis      6380
 RabbitMQ   5672 / 15672
-API        8080
+Nginx API  8080
 ```
 
 验证链路：

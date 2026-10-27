@@ -47,7 +47,7 @@ sample.ps1        跑一轮并采样容器 CPU、MySQL 连接数与"每请求 SQ
 用法示例：
 
 ```powershell
-$env:RATE_LIMIT_ENABLED='false'; docker compose up -d api
+$env:RATE_LIMIT_ENABLED='false'; docker compose up -d --no-deps --force-recreate api-1 api-2
 ./deploy/loadtest/run.ps1 -Target video_detail -Rates 500,1000,2000,3000,4000
 ./deploy/loadtest/sample.ps1 -Target video_detail -Rate 4000 -Seconds 10
 ```
@@ -93,7 +93,7 @@ RATE_LIMIT_IDENTITY_INTERVAL  默认 250ms
 `compose.yaml` 里用 `${VAR:-default}` 透传，所以压测时不用改文件：
 
 ```powershell
-$env:RATE_LIMIT_ENABLED='false'; docker compose up -d api
+$env:RATE_LIMIT_ENABLED='false'; docker compose up -d --no-deps --force-recreate api-1 api-2
 ```
 
 验证：关闭后打 2500 次请求全部 200（若限流生效，2000 次之后应出现 429），

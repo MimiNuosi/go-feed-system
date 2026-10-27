@@ -248,3 +248,34 @@ func TestLoadRateLimitConfig(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadTrustedProxies(t *testing.T) {
+	setMinimalEnv := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("MYSQL_DSN", "user:pass@tcp(127.0.0.1:3306)/test")
+		t.Setenv("JWT_SECRET", strings.Repeat("x", 32))
+		t.Setenv("RABBITMQ_URL", "amqp://feed_app:secret@127.0.0.1:5672/")
+	}
+
+	t.Run("解析多个代理", func(t *testing.T) {
+		setMinimalEnv(t)
+		t.Setenv("HTTP_TRUSTED_PROXIES", "172.16.0.0/12, 127.0.0.1")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("load config: %v", err)
+		}
+		if len(cfg.HTTP.TrustedProxies) != 2 {
+			t.Fatalf("trusted proxies = %v", cfg.HTTP.TrustedProxies)
+		}
+	})
+
+	t.Run("拒绝非法代理", func(t *testing.T) {
+		setMinimalEnv(t)
+		t.Setenv("HTTP_TRUSTED_PROXIES", "not-a-proxy")
+
+		if _, err := Load(); err == nil {
+			t.Fatal("expected invalid trusted proxy to fail")
+		}
+	})
+}

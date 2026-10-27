@@ -27,3 +27,27 @@ func TestPrometheusConfigFilesParse(t *testing.T) {
 		})
 	}
 }
+
+func TestPrometheusScrapesBothAPIs(t *testing.T) {
+	content, err := os.ReadFile("prometheus.yml")
+	if err != nil {
+		t.Fatalf("read prometheus.yml: %v", err)
+	}
+	var config struct {
+		ScrapeConfigs []struct {
+			StaticConfigs []struct {
+				Targets []string `yaml:"targets"`
+			} `yaml:"static_configs"`
+		} `yaml:"scrape_configs"`
+	}
+	if err := yaml.Unmarshal(content, &config); err != nil {
+		t.Fatalf("parse prometheus.yml: %v", err)
+	}
+	if len(config.ScrapeConfigs) == 0 || len(config.ScrapeConfigs[0].StaticConfigs) == 0 {
+		t.Fatal("missing API scrape targets")
+	}
+	targets := config.ScrapeConfigs[0].StaticConfigs[0].Targets
+	if len(targets) != 2 || targets[0] != "api-1:8080" || targets[1] != "api-2:8080" {
+		t.Fatalf("unexpected API targets: %v", targets)
+	}
+}

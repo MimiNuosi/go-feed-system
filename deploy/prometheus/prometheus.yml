@@ -14,4 +14,5 @@ scrape_configs:
     scheme: http
     static_configs:
       - targets:
-          - api:8080
+          - api-1:8080
+          - api-2:8080

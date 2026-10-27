@@ -9,18 +9,20 @@ prometheus.yml  抓取 /metrics
 alerts.yml      基础告警规则
 ```
 
-Compose 默认抓取地址：
+Compose 默认分别抓取两个 API 副本：
 
 ```text
-http://api:8080/metrics
+http://api-1:8080/metrics
+http://api-2:8080/metrics
 ```
 
-如果 Prometheus 直接运行在 Windows 主机，需要把 `prometheus.yml` 中的
-target 改为：
+如果 Prometheus 直接运行在 Windows 主机，可以临时改为抓取 Nginx
+`127.0.0.1:8080`，但这样得到的是轮询到某个 API 的指标；要区分双副本，
+应保持 Compose 内的 `api-1`、`api-2` 两个 target。
 
 ```yaml
 targets:
-  - 127.0.0.1:8080
+  - 127.0.0.1:8080 # 仅适合快速查看，不区分两个副本
 ```
 
 ## 告警
@@ -33,6 +35,9 @@ FeedConsumerDisconnected
 FeedConsumerReconnectFlapping
 OutboxPublishFailures
 OutboxMarkPublishedFailures
+RealtimeSubscriberDisconnected
+RealtimePublishFailures
+RealtimeHandlerErrors
 DLQMessagesDetected
 HighHTTP5xxRate
 HighHTTPP95Latency
