@@ -34,6 +34,9 @@ type Metrics struct {
 	realtimeSubscriber prometheus.Gauge
 
 	rateLimitBackend *prometheus.CounterVec
+
+	backgroundWorkerLeader *prometheus.GaugeVec
+	backgroundWorkerLease  *prometheus.CounterVec
 }
 
 func New() *Metrics {
@@ -136,6 +139,20 @@ func New() *Metrics {
 		},
 		[]string{"backend", "result"},
 	)
+	backgroundWorkerLeader := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "background_worker_leader",
+			Help: "Whether this instance currently leads a background worker.",
+		},
+		[]string{"worker"},
+	)
+	backgroundWorkerLease := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "background_worker_lease_total",
+			Help: "Total number of background worker lease events.",
+		},
+		[]string{"worker", "result"},
+	)
 
 	registry.MustRegister(
 		httpInFlight,
@@ -152,26 +169,30 @@ func New() *Metrics {
 		realtimeReconnect,
 		realtimeSubscriber,
 		rateLimitBackend,
+		backgroundWorkerLeader,
+		backgroundWorkerLease,
 	)
 	consumerConnected.Set(0)
 	realtimeSubscriber.Set(0)
 
 	return &Metrics{
-		registry:           registry,
-		httpInFlight:       httpInFlight,
-		httpRequests:       httpRequests,
-		httpDuration:       httpDuration,
-		httpRateLimited:    httpRateLimited,
-		consumerReconnect:  consumerReconnect,
-		consumerConnected:  consumerConnected,
-		consumerDLQ:        consumerDLQ,
-		outboxPublish:      outboxPublish,
-		viewWriteback:      viewWriteback,
-		realtimePublish:    realtimePublish,
-		realtimeReceive:    realtimeReceive,
-		realtimeReconnect:  realtimeReconnect,
-		realtimeSubscriber: realtimeSubscriber,
-		rateLimitBackend:   rateLimitBackend,
+		registry:               registry,
+		httpInFlight:           httpInFlight,
+		httpRequests:           httpRequests,
+		httpDuration:           httpDuration,
+		httpRateLimited:        httpRateLimited,
+		consumerReconnect:      consumerReconnect,
+		consumerConnected:      consumerConnected,
+		consumerDLQ:            consumerDLQ,
+		outboxPublish:          outboxPublish,
+		viewWriteback:          viewWriteback,
+		realtimePublish:        realtimePublish,
+		realtimeReceive:        realtimeReceive,
+		realtimeReconnect:      realtimeReconnect,
+		realtimeSubscriber:     realtimeSubscriber,
+		rateLimitBackend:       rateLimitBackend,
+		backgroundWorkerLeader: backgroundWorkerLeader,
+		backgroundWorkerLease:  backgroundWorkerLease,
 	}
 }
 
@@ -248,4 +269,16 @@ func (m *Metrics) SetRealtimeSubscriberConnected(connected bool) {
 
 func (m *Metrics) IncRateLimitBackend(backend string, result string) {
 	m.rateLimitBackend.WithLabelValues(backend, result).Inc()
+}
+
+func (m *Metrics) SetBackgroundWorkerLeader(worker string, leader bool) {
+	value := 0.0
+	if leader {
+		value = 1
+	}
+	m.backgroundWorkerLeader.WithLabelValues(worker).Set(value)
+}
+
+func (m *Metrics) IncBackgroundWorkerLease(worker string, result string) {
+	m.backgroundWorkerLease.WithLabelValues(worker, result).Inc()
 }

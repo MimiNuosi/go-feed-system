@@ -87,6 +87,24 @@ groups:
           summary: Redis rate limiter is falling back locally
           description: The shared Redis token bucket failed and requests used the per-instance fallback at least once in the last 5 minutes.
 
+      - alert: BackgroundWorkerNoLeader
+        expr: sum by (worker) (background_worker_leader) < 1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: A background worker has no active leader
+          description: No API instance has held the lease for this background worker for at least 1 minute.
+
+      - alert: BackgroundWorkerLeaseErrors
+        expr: sum by (worker) (increase(background_worker_lease_total{result=~"acquire_error|renew_error|release_error"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Background worker lease operations are failing
+          description: Redis lease acquisition, renewal, or release failed during the last 5 minutes.
+
       - alert: DLQMessagesDetected
         expr: sum(increase(feed_consumer_dlq_total[5m])) > 0
         for: 1m

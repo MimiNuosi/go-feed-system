@@ -307,16 +307,79 @@ Redis
   剩余 TTL 正常
 ```
 
+## 14.5A 后台 Worker 租约选主（已完成）
+
+### 问题
+
+两个 API 都会启动 Outbox 和浏览量回写 Worker。即使数据库操作幂等，
+同时运行也会产生无意义的重复扫描、重复 MQ publish 和重复日志。
+
+### 方案
+
+新增 Redis 租约：
+
+```text
+background:lease:outbox
+background:lease:view-writeback
+```
+
+每个实例使用唯一 owner ID 竞争：
+
+```text
+SET NX PX 获取租约
+-> 只有 Leader 执行 Worker
+-> 每 5 秒执行 compare-and-PEXPIRE 续约
+-> 关闭时 compare-and-DEL 主动释放
+-> Leader 故障后，另一实例在租约超时后接管
+```
+
+续约和释放使用 Lua compare owner，避免旧 Leader 删除新 Leader 的租约。
+
+### 失败语义
+
+```text
+Redis 不可用 -> 无法获得租约 -> 后台 Worker 暂停
+```
+
+这里与限流不同，不采用降级后多实例同时执行。后台任务优先保证不重复，
+任务短暂暂停比两个 Worker 同时写更安全。
+
+### 验证结果
+
+```text
+两个 Elector 竞争同一租约
+  只有第一个 Worker 启动
+
+取消第一个 Elector
+  第一个主动释放租约
+  第二个自动接管并启动 Worker
+
+续约测试
+  Leader 每 5 秒续约
+  失去 owner 后 Worker context 被取消
+
+真实 Redis lease lifecycle
+  acquire / renew / wrong-owner renew / release / reacquire 全部通过
+
+双 API 容器
+  api-1: outbox=1, view-writeback=1
+  api-2: outbox=0, view-writeback=0
+
+停止 api-1 后等待 20 秒
+  api-2: outbox=1, view-writeback=1
+  api-2 租约开始持续 renew
+```
+
 ## 当前局限
 
 ```text
-1. Outbox 和浏览量回写 Worker 仍可能在多个实例同时运行，需要选主、分片或同等幂等约束
-2. Redis 是实时通道和共享限流额度的依赖，但 MySQL 数据不依赖 Redis
+1. Redis 是实时通道、共享限流额度和后台 Worker 租约的依赖，但 MySQL 数据不依赖 Redis
+2. Leader 切换窗口内后台任务仍可能重叠执行，业务侧继续保持至少一次幂等约束
 3. 当前固定两个 API 服务，还没有自动扩缩容
 ```
 
 ## 下一步
 
 ```text
-14.5 多实例压测、长时间稳定性与最终验收
+14.5B 分片上传并发边界加固
 ```

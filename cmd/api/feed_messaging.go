@@ -10,6 +10,7 @@ import (
 	"go-feed-system/internal/feed"
 	"go-feed-system/internal/outbox"
 	"go-feed-system/pkg/config"
+	"go-feed-system/pkg/leader"
 	"go-feed-system/pkg/rabbitmq"
 )
 
@@ -44,6 +45,7 @@ func newFeedMessaging(
 	inbox feed.Inbox,
 	followers feed.FollowerReader,
 	metrics feedMessagingMetrics,
+	leaderElector *leader.Elector,
 	logger *slog.Logger,
 ) (*feedMessaging, error) {
 	if repository == nil {
@@ -92,11 +94,15 @@ func newFeedMessaging(
 		logger,
 		metrics,
 	)
-	worker := outbox.NewWorker(
+	outboxWorker := outbox.NewWorker(
 		outboxPublisher,
 		cfg.Outbox.PublishInterval,
 		logger,
 	)
+	var worker outboxWorkerRunner = outboxWorker
+	if leaderElector != nil {
+		worker = leaderElector.Wrap("outbox", outboxWorker)
+	}
 
 	return &feedMessaging{
 		consumerSupervisor: consumerSupervisor,

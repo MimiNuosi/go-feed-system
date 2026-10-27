@@ -39,6 +39,8 @@ RealtimeSubscriberDisconnected
 RealtimePublishFailures
 RealtimeHandlerErrors
 RateLimitRedisFallback
+BackgroundWorkerNoLeader
+BackgroundWorkerLeaseErrors
 DLQMessagesDetected
 HighHTTP5xxRate
 HighHTTPP95Latency

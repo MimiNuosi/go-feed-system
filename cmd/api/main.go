@@ -28,6 +28,7 @@ import (
 	"go-feed-system/internal/video"
 	"go-feed-system/pkg/config"
 	"go-feed-system/pkg/database"
+	"go-feed-system/pkg/leader"
 	"go-feed-system/pkg/metrics"
 	"go-feed-system/pkg/password"
 	"go-feed-system/pkg/redis"
@@ -91,6 +92,15 @@ func run() error {
 		redisClient,
 		cfg.Feed.BigAuthorCacheTTL,
 	)
+	leaderElector, err := leader.NewRedisElector(
+		redisClient,
+		leader.Options{},
+		logger,
+		appMetrics,
+	)
+	if err != nil {
+		return fmt.Errorf("create background worker leader elector: %w", err)
+	}
 
 	hasher, err := password.NewBcryptHasher(bcrypt.DefaultCost)
 	if err != nil {
@@ -169,6 +179,7 @@ func run() error {
 		redisInbox,
 		followRepository,
 		appMetrics,
+		leaderElector,
 		logger,
 	)
 	if err != nil {
@@ -199,6 +210,10 @@ func run() error {
 		hot.DefaultViewWritebackInterval,
 		logger,
 	)
+	var viewWritebackRunner interface {
+		Run(ctx context.Context) error
+	} = viewWritebackWorker
+	viewWritebackRunner = leaderElector.Wrap("view-writeback", viewWritebackWorker)
 
 	likeRepository := interaction.NewGORMLikeRepository(db)
 	likeService := interaction.NewLikeService(
@@ -364,7 +379,7 @@ func run() error {
 
 	viewWritebackErrCh := make(chan error, 1)
 	go func() {
-		viewWritebackErrCh <- viewWritebackWorker.Run(runCtx)
+		viewWritebackErrCh <- viewWritebackRunner.Run(runCtx)
 	}()
 
 	realtimeErrCh := make(chan error, 1)

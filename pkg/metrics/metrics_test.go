@@ -20,6 +20,8 @@ func TestMetricsHandlerAndMethods(t *testing.T) {
 	metrics.SetConsumerConnected(true)
 	metrics.IncDLQMessage("max_retries")
 	metrics.IncOutboxPublish("error")
+	metrics.SetBackgroundWorkerLeader("outbox", true)
+	metrics.IncBackgroundWorkerLease("outbox", "acquired")
 
 	if got := metricValue(t, metrics, "http_requests_total", map[string]string{
 		"method": http.MethodGet,
@@ -45,6 +47,17 @@ func TestMetricsHandlerAndMethods(t *testing.T) {
 		"result": "error",
 	}); got != 1 {
 		t.Fatalf("expected outbox publish counter 1, got %v", got)
+	}
+	if got := metricValue(t, metrics, "background_worker_leader", map[string]string{
+		"worker": "outbox",
+	}); got != 1 {
+		t.Fatalf("expected background worker leader gauge 1, got %v", got)
+	}
+	if got := metricValue(t, metrics, "background_worker_lease_total", map[string]string{
+		"worker": "outbox",
+		"result": "acquired",
+	}); got != 1 {
+		t.Fatalf("expected background worker lease counter 1, got %v", got)
 	}
 
 	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)

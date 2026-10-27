@@ -54,6 +54,7 @@ func TestNewFeedMessaging_DoesNotConnectRabbitMQ(t *testing.T) {
 		&connectorInbox{},
 		&connectorFollowerReader{},
 		nil,
+		nil,
 		newSupervisorTestLogger(),
 	)
 	if err != nil {
