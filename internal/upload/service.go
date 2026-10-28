@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -18,15 +19,22 @@ import (
 	"github.com/google/uuid"
 
 	"go-feed-system/internal/video"
+	"go-feed-system/pkg/distlock"
 )
 
 var (
 	ErrInvalidInput = errors.New("invalid upload input")
 	ErrForbidden    = errors.New("upload session belongs to another user")
 	ErrIncomplete   = errors.New("upload is not complete")
+	ErrUploadBusy   = errors.New("upload merge is busy")
 )
 
 var md5Pattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+const (
+	uploadMergeLockTTL  = 5 * time.Minute
+	uploadMergeLockWait = 30 * time.Second
+)
 
 // VideoUploader 是完成分片后复用的整文件上传能力（video.Service 满足它）。
 type VideoUploader interface {
@@ -42,14 +50,18 @@ type Service struct {
 	repo     Repository
 	videos   VideoUploader
 	existing ExistingVideoReader
+	locker   distlock.Locker
 	baseDir  string
 	logger   *slog.Logger
+
+	mergeLockWait time.Duration
 }
 
 func NewService(
 	repo Repository,
 	videos VideoUploader,
 	existing ExistingVideoReader,
+	locker distlock.Locker,
 	baseDir string,
 	logger *slog.Logger,
 ) *Service {
@@ -57,11 +69,13 @@ func NewService(
 		logger = slog.Default()
 	}
 	return &Service{
-		repo:     repo,
-		videos:   videos,
-		existing: existing,
-		baseDir:  baseDir,
-		logger:   logger,
+		repo:          repo,
+		videos:        videos,
+		existing:      existing,
+		locker:        locker,
+		baseDir:       baseDir,
+		logger:        logger,
+		mergeLockWait: uploadMergeLockWait,
 	}
 }
 
@@ -271,6 +285,30 @@ func (s *Service) Complete(ctx context.Context, authorID uint64, uploadID string
 		return *session.VideoID, nil
 	}
 
+	release, err := s.acquireMergeLock(ctx, uploadID)
+	if err != nil {
+		return 0, err
+	}
+	if release != nil {
+		defer func() {
+			if err := release(); err != nil {
+				s.logger.Warn("release upload merge lock", "upload_id", uploadID, "error", err)
+			}
+		}()
+	}
+
+	// 第二个并发 complete 拿到锁后必须重新读会话：第一个请求可能已经完成。
+	session, err = s.repo.FindSession(ctx, uploadID)
+	if err != nil {
+		return 0, err
+	}
+	if session.AuthorID != authorID {
+		return 0, ErrForbidden
+	}
+	if session.Status == StatusCompleted && session.VideoID != nil {
+		return *session.VideoID, nil
+	}
+
 	// 崩溃恢复：如果视频已经写库但会话没标记完成，按 MD5 找回并补标。
 	if s.existing != nil {
 		existing, err := s.existing.FindByAuthorAndMD5(ctx, authorID, session.FileMD5)
@@ -329,6 +367,29 @@ func (s *Service) Complete(ctx context.Context, authorID uint64, uploadID string
 	return created.ID, nil
 }
 
+func (s *Service) acquireMergeLock(
+	ctx context.Context,
+	uploadID string,
+) (distlock.UnlockFunc, error) {
+	if s.locker == nil {
+		return nil, nil
+	}
+	lockCtx, cancel := context.WithTimeout(ctx, s.mergeLockWait)
+	defer cancel()
+	release, err := s.locker.Acquire(
+		lockCtx,
+		"upload:merge:"+uploadID,
+		uploadMergeLockTTL,
+	)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return nil, fmt.Errorf("wait for upload merge lock: %w", ErrUploadBusy)
+		}
+		return nil, fmt.Errorf("acquire upload merge lock: %w", err)
+	}
+	return release, nil
+}
+
 // mergeChunks 按 index 升序拼接到目标文件，并校验每一片的大小。
 //
 // TODO(学习点)：这里有意留成独立函数，方便你对照 C++ 的
@@ -383,7 +444,7 @@ func (s *Service) sessionDir(uploadID string) string {
 
 // writeFileAtomic 先写临时文件再 rename，避免半截分片被当成完整分片。
 func writeFileAtomic(path string, content io.Reader, expected int64) error {
-	tmp := path + ".tmp"
+	tmp := fmt.Sprintf("%s.%s.tmp", path, uuid.NewString())
 	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("create chunk temp file: %w", err)
@@ -403,9 +464,23 @@ func writeFileAtomic(path string, content io.Reader, expected int64) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("chunk size mismatch: wrote %d want %d: %w", written, expected, ErrInvalidInput)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := commitChunkFile(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("commit chunk file: %w", err)
 	}
 	return nil
+}
+
+// commitChunkFile 用 hard-link 原子地创建最终分片。
+//
+// 如果另一个并发请求已经提交同一片，hard-link 返回 EEXIST；此时保留先完成的
+// 文件并删除自己的临时文件即可。这样两个 API 不会互相覆盖同名临时文件。
+func commitChunkFile(tmp string, path string) error {
+	if err := os.Link(tmp, path); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return os.Remove(tmp)
+		}
+		return err
+	}
+	return os.Remove(tmp)
 }

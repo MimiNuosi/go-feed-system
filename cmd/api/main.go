@@ -28,6 +28,7 @@ import (
 	"go-feed-system/internal/video"
 	"go-feed-system/pkg/config"
 	"go-feed-system/pkg/database"
+	"go-feed-system/pkg/distlock"
 	"go-feed-system/pkg/leader"
 	"go-feed-system/pkg/metrics"
 	"go-feed-system/pkg/password"
@@ -234,10 +235,12 @@ func run() error {
 	)
 
 	uploadRepository := upload.NewGORMRepository(db)
+	uploadMergeLocker := distlock.NewRedisLocker(redisClient)
 	uploadService := upload.NewService(
 		uploadRepository,
 		videoService,
 		videoRepository,
+		uploadMergeLocker,
 		cfg.Storage.LocalDir,
 		logger,
 	)

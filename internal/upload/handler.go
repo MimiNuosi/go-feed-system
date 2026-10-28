@@ -175,6 +175,8 @@ func (h *Handler) handleError(c *gin.Context, err error) {
 		httpx.Abort(c, http.StatusForbidden, httpx.ErrorCodeForbidden, "upload session forbidden")
 	case errors.Is(err, ErrIncomplete):
 		httpx.Abort(c, http.StatusConflict, httpx.ErrorCodeConflict, "upload is not complete")
+	case errors.Is(err, ErrUploadBusy):
+		httpx.Abort(c, http.StatusConflict, httpx.ErrorCodeConflict, "upload merge is busy")
 	case errors.Is(err, video.ErrUnsupportedMediaType):
 		httpx.Abort(c, http.StatusUnsupportedMediaType, httpx.ErrorCodeInvalidArgument, "unsupported video type")
 	case errors.Is(err, video.ErrFileTooLarge):

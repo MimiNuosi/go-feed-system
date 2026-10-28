@@ -370,16 +370,75 @@ Redis 不可用 -> 无法获得租约 -> 后台 Worker 暂停
   api-2 租约开始持续 renew
 ```
 
+## 14.5B 分片上传并发边界加固（已完成）
+
+### 问题一：同名临时分片文件
+
+原实现使用固定临时名：
+
+```text
+<index>.part.tmp
+```
+
+同一个分片并发重试且请求被分到两个 API 时，两个进程会同时写同一个临时文件，
+可能互相截断，也可能在 rename 阶段竞争。
+
+修复：
+
+```text
+<index>.part.<uuid>.tmp  每个写入者使用唯一临时文件
+-> os.Link 原子创建最终 <index>.part
+-> 已存在说明另一个请求先完成，删除自己的临时文件并视为成功
+```
+
+hard-link 在共享 Volume 上提供“create-if-not-exists”语义，不覆盖先完成的分片。
+最终文件 MD5 仍会检查分片内容是否属于同一个视频。
+
+### 问题二：并发 complete
+
+两个 `complete` 同时落到不同 API 时，可能同时创建 `merged.tmp` 并重复写视频。
+
+修复：
+
+```text
+Redis lock: upload:merge:<uploadID>
+-> 第二个请求最多等待 30 秒
+-> 拿到锁后重新读取 upload_sessions
+-> 如果已经是 completed，直接返回已有 video_id
+-> 仍未完成才执行合并
+```
+
+Redis 锁 TTL 为 5 分钟，释放时使用 Lua compare owner，避免误删其他请求的锁。
+如果等待超时，API 返回 409 `upload merge is busy`。
+
+### 验证结果
+
+```text
+同一分片并发 8 个真实 HTTP 请求
+  8/8 返回 200
+
+两个真实并发 complete
+  两个响应 video_id 都是 97
+  用户作品数 = 1
+  Redis 中没有残留 upload:merge:* key
+
+单元测试
+  16 个 goroutine 并发写同一分片，最终内容完整且无临时文件残留
+  两个 Complete 并发只调用一次最终视频上传
+  锁等待超时映射为 ErrUploadBusy
+```
+
 ## 当前局限
 
 ```text
-1. Redis 是实时通道、共享限流额度和后台 Worker 租约的依赖，但 MySQL 数据不依赖 Redis
-2. Leader 切换窗口内后台任务仍可能重叠执行，业务侧继续保持至少一次幂等约束
-3. 当前固定两个 API 服务，还没有自动扩缩容
+1. 视频和分片使用单机 Docker 共享 Volume；跨宿主机部署需要 MinIO/S3
+2. Redis 是实时通道、共享限流、后台租约和上传合并锁的依赖，但 MySQL 数据不依赖 Redis
+3. Leader 切换窗口内后台任务仍可能重叠执行，业务侧继续保持至少一次幂等约束
+4. 当前固定两个 API 服务，还没有自动扩缩容
 ```
 
 ## 下一步
 
 ```text
-14.5B 分片上传并发边界加固
+14.5C 多实例压测、长时间稳定性与最终验收
 ```
