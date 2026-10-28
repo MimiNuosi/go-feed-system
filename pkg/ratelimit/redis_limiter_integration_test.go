@@ -97,6 +97,7 @@ func TestRedisKeyedLimiterFallsBackWhenRedisFails(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
+	startedAt := time.Now()
 	first, err := limiter.Allow(ctx, "user")
 	if err != nil {
 		t.Fatalf("first Allow error: %v", err)
@@ -107,6 +108,9 @@ func TestRedisKeyedLimiterFallsBackWhenRedisFails(t *testing.T) {
 	}
 	if !first || second {
 		t.Fatalf("fallback decisions = %v, %v; want true, false", first, second)
+	}
+	if elapsed := time.Since(startedAt); elapsed > 500*time.Millisecond {
+		t.Fatalf("fallback was too slow: %s", elapsed)
 	}
 	if metrics.backendResults["redis:error"] < 2 {
 		t.Fatalf("redis error metrics = %d, want at least 2", metrics.backendResults["redis:error"])

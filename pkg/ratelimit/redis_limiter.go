@@ -11,6 +11,7 @@ import (
 )
 
 const redisFallbackLogInterval = 5 * time.Second
+const defaultRedisOperationTimeout = 100 * time.Millisecond
 
 // redisTokenBucketScript 原子完成“补令牌、clamp、扣令牌、续 TTL”。
 //
@@ -60,14 +61,15 @@ type RedisMetrics interface {
 
 // RedisKeyedLimiter 使用共享 Redis 令牌桶，并在 Redis 故障时降级到本地桶。
 type RedisKeyedLimiter struct {
-	client    *redis.Client
-	config    Config
-	namespace string
-	fallback  *KeyedLimiter
-	logger    *slog.Logger
-	metrics   RedisMetrics
-	idleTTL   time.Duration
-	now       func() time.Time
+	client           *redis.Client
+	config           Config
+	namespace        string
+	fallback         *KeyedLimiter
+	logger           *slog.Logger
+	metrics          RedisMetrics
+	idleTTL          time.Duration
+	now              func() time.Time
+	operationTimeout time.Duration
 
 	logMu           sync.Mutex
 	lastFallbackLog time.Time
@@ -94,14 +96,15 @@ func NewRedisKeyedLimiter(
 		logger = slog.Default()
 	}
 	return &RedisKeyedLimiter{
-		client:    client,
-		config:    config,
-		namespace: namespace,
-		fallback:  fallback,
-		logger:    logger,
-		metrics:   metrics,
-		idleTTL:   defaultIdleTTL,
-		now:       time.Now,
+		client:           client,
+		config:           config,
+		namespace:        namespace,
+		fallback:         fallback,
+		logger:           logger,
+		metrics:          metrics,
+		idleTTL:          defaultIdleTTL,
+		now:              time.Now,
+		operationTimeout: defaultRedisOperationTimeout,
 	}, nil
 }
 
@@ -126,8 +129,10 @@ func (l *RedisKeyedLimiter) Allow(
 		intervalMicros = 1
 	}
 	redisKey := l.redisKey(key)
+	redisCtx, cancel := context.WithTimeout(ctx, l.operationTimeout)
+	defer cancel()
 	result, err := redisTokenBucketScript.Run(
-		ctx,
+		redisCtx,
 		l.client,
 		[]string{redisKey},
 		now.UnixMicro(),

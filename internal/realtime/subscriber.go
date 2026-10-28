@@ -25,11 +25,13 @@ type SubscriberMetrics interface {
 }
 
 type RedisSubscriber struct {
-	client     *redis.Client
-	logger     *slog.Logger
-	metrics    SubscriberMetrics
-	minBackoff time.Duration
-	maxBackoff time.Duration
+	client         *redis.Client
+	logger         *slog.Logger
+	metrics        SubscriberMetrics
+	minBackoff     time.Duration
+	maxBackoff     time.Duration
+	healthInterval time.Duration
+	healthTimeout  time.Duration
 
 	mu       sync.RWMutex
 	handlers map[EventType]Handler
@@ -44,12 +46,14 @@ func NewRedisSubscriber(
 		logger = slog.Default()
 	}
 	return &RedisSubscriber{
-		client:     client,
-		logger:     logger,
-		metrics:    metrics,
-		minBackoff: defaultReconnectMinBackoff,
-		maxBackoff: defaultReconnectMaxBackoff,
-		handlers:   make(map[EventType]Handler),
+		client:         client,
+		logger:         logger,
+		metrics:        metrics,
+		minBackoff:     defaultReconnectMinBackoff,
+		maxBackoff:     defaultReconnectMaxBackoff,
+		healthInterval: 5 * time.Second,
+		healthTimeout:  time.Second,
+		handlers:       make(map[EventType]Handler),
 	}
 }
 
@@ -102,10 +106,23 @@ func (s *RedisSubscriber) consume(ctx context.Context) (bool, error) {
 	s.incReconnect("success")
 
 	messages := pubsub.Channel()
+	healthTicker := time.NewTicker(s.healthInterval)
+	defer healthTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return true, nil
+		case <-healthTicker.C:
+			healthCtx, cancel := context.WithTimeout(ctx, s.healthTimeout)
+			err := s.client.Ping(healthCtx).Err()
+			cancel()
+			if err != nil {
+				s.setConnected(false)
+				s.incReconnect("health_error")
+				s.logger.Warn("realtime redis health check failed", "error", err)
+				continue
+			}
+			s.setConnected(true)
 		case message, ok := <-messages:
 			if !ok {
 				if ctx.Err() != nil {

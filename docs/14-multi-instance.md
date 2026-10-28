@@ -1,4 +1,4 @@
-# 阶段 14：多实例与生产化
+# 阶段 14：多实例与生产化（已完成）
 
 ## 目标
 
@@ -9,7 +9,9 @@
 14.2 Docker Compose 多 API 实例与 Nginx
 14.3 Nginx 故障切换与 SSE 重连
 14.4 Redis 分布式令牌桶限流
-14.5 多实例集成测试、压测与故障演练
+14.5A Redis 租约选主
+14.5B 分片上传并发加固
+14.5C 多实例压测、Redis 故障与最终验收
 ```
 
 ## 14.1 Redis Pub/Sub（已完成）
@@ -428,6 +430,97 @@ Redis 锁 TTL 为 5 分钟，释放时使用 Lua compare owner，避免误删其
   锁等待超时映射为 ErrUploadBusy
 ```
 
+## 14.5C 多实例压测与故障验收（已完成）
+
+### 压测方法
+
+```text
+目标接口    GET /api/v1/videos/1
+压测工具    vegeta 开环固定速率
+入口        127.0.0.1:18080 -> Nginx
+时长        5 秒
+速率        1000 / 2000 / 4000 rps
+限流        压测基线期间关闭
+```
+
+双实例阶段结果：
+
+```text
+1000 rps  throughput=1000.03  P95=2.096ms   成功=100%
+2000 rps  throughput=2000.00  P95=2.078ms   成功=100%
+4000 rps  throughput=3999.24  P95=17.828ms  成功=100%
+```
+
+这里第一次 4000 rps 运行还受到 Nginx 同步 access log 影响。改为
+`buffer=64k flush=1s` 后复测 P95 降到 6.101ms。后续同机反复压测出现较大波动，
+因此不把单次最低值当作结论。
+
+重启单实例后在相同日志缓冲条件下复测：
+
+```text
+单实例 4000 rps   throughput=3999.20  P95=66.424ms  成功=100%
+双实例 4000 rps   throughput=3998.90  P95=37.671ms  成功=100%
+```
+
+结论：
+
+```text
+1. 两个 API 能降低单进程压力，但吞吐上限仍受共享 MySQL 影响
+2. 双实例最确定的价值是高可用，不是线性翻倍
+3. 压测客户端与服务同机，短时间结果波动明显，必须保留原始上下文
+```
+
+### 故障验收
+
+```text
+停止 api-2
+  20/20 HTTP 请求仍然成功
+  Nginx 自动转发到 api-1
+
+浏览器 SSE 连接在 api-1
+  停止 api-1 后前端约 3 秒重连 api-2
+  新通知通过 Redis Pub/Sub 到达浏览器
+
+停止 Redis
+  10/10 业务请求仍然成功
+  首次约 367ms，后续约 106ms
+  readyz=degraded，MySQL/RabbitMQ 仍 up
+  rate_limit_backend_total{backend="redis",result="error"} 增加
+  rate_limit_backend_total{backend="local",result="allow"} 增加
+  realtime_subscriber_connected 在健康检查后变为 0
+  background_worker_leader 在租约续期失败后变为 0
+
+恢复 Redis
+  readyz=ok
+  两个实例 realtime_subscriber_connected 恢复为 1
+  一个实例重新获得 outbox / view-writeback 租约
+  新请求重新走 Redis 共享令牌桶
+```
+
+### Redis 故障时发现的两个延迟问题
+
+```text
+1. 限流 Lua 默认会等待 go-redis 重试数秒
+   修复：每次 Redis 限流调用 100ms 超时，失败立即使用本地桶
+
+2. go-redis PubSub 会在内部自动重连，外层循环不会立即退出
+   修复：realtime subscriber 每 5 秒独立 Ping Redis，
+   用真实 Ping 结果维护 realtime_subscriber_connected
+```
+
+### 最终状态
+
+```text
+go test ./...                         通过
+go vet ./...                          通过
+Nginx 动态上游                      通过
+双实例 HTTP 故障切换                通过
+跨实例 SSE 和断线重连               通过
+Redis 限流降级与恢复                通过
+后台 Worker Leader 故障接管         通过
+分片并发上传和并发 complete         通过
+```
+
 ## 当前局限
 
 ```text
@@ -437,8 +530,8 @@ Redis 锁 TTL 为 5 分钟，释放时使用 Lua compare owner，避免误删其
 4. 当前固定两个 API 服务，还没有自动扩缩容
 ```
 
-## 下一步
+## 后续可选
 
 ```text
-14.5C 多实例压测、长时间稳定性与最终验收
+MinIO/S3、自动扩缩容、Playwright E2E
 ```
